@@ -467,9 +467,10 @@ void configure_from_environment() {
   // record, available at post time instead of several VBlanks later). `shadow` and `off` never reach this branch.
   if (g.mode == Mode::present) {
     live_world::configure_from_environment();
-    if (live_world::active()) {
-      set_live_job_source_sink(&live_world::note_job_source);
-      g.world_draws = true;
+    // The store is on in `present` for the car pass as well as the world; only the world draw follows its own switch.
+    set_live_job_source_sink(&live_world::note_job_source);
+    g.world_draws = live_world::world_enabled();
+    if (g.world_draws) {
       std::fprintf(stderr, "[coregs3] live world: on (captured sky/far-underlay/course passes, per-job textures)\n");
     } else {
       std::fprintf(stderr, "[coregs3] live world: off (GT4_COREGS3_LIVE_WORLD=0): the car pass only\n");
@@ -1147,6 +1148,14 @@ void print_report(std::FILE *out) noexcept {
                  static_cast<unsigned long long>(load(p.world_light_draws_fallback)),
                  static_cast<unsigned long long>(load(p.world_light_vertices_lit)),
                  static_cast<unsigned long long>(load(p.world_light_vertices_fallback)));
+  if (load(p.car_textured_items) != 0 || load(p.car_reflection_items) != 0 || load(p.car_refused_items) != 0)
+    std::fprintf(out,
+                 "[coregs3] car textures: textured %llu reflection %llu no_record %llu refused %llu atlas %llu\n",
+                 static_cast<unsigned long long>(load(p.car_textured_items)),
+                 static_cast<unsigned long long>(load(p.car_reflection_items)),
+                 static_cast<unsigned long long>(load(p.car_no_record_items)),
+                 static_cast<unsigned long long>(load(p.car_refused_items)),
+                 static_cast<unsigned long long>(load(p.car_atlas_textures)));
   // Per-family and per-status lighting detail of the live layer (coregs3_lighting.hpp programs). Cumulative since the
   // process start; a draw may appear in more than one family because the capture mixes programs inside a draw.
   for (std::uint32_t program = 0; program < kLightProgramCount; ++program) {

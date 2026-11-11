@@ -2667,3 +2667,24 @@ Split check: with the 2D split on, the night B-Spec scene's 3D image is black (f
 was validated on A-Spec only, and the finding is reported to the split owner. Checks: CTest coregs3 21/21, Python 18/18,
 the 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B), clean rebuild (`4c1cb1ee1e9f8cb1cc97d9e52d67a4c85a5884db981690a47f8760b555c4f7c7`). Evidence
 `build/evidence-live-world/` (`night-shade-*`, `shade-ab*.log`, `shade-frame-7399.png`).
+
+## 38. Round 36 (2026-11-11, branch `task/090-live-world`): the car pass textures and reflection, first implementation
+
+`build_car_table` (per claimed frame, under the world mutex) binds the car items from the live job records exactly as the
+offline car path: `build_tap_snapshot` + `build_frame_texture_table` with `world_channels = false`, `reflections = true`;
+the shared atlas packs both the car and the world textures. `build_frame_textured` emits per-item ranges with the item's
+TEX0/CLAMP/atlas rectangle/UV (the reflection texgen S,T for the body/paint items), the per-vertex fog and the measured
+state; `coregs3_car.vert`/`.frag` sample the atlas (MODULATE/TCC, nearest or the GS bilinear, four wraps), fog to FOGCOL,
+the alpha test, DATE/DATM against the display word's alpha MSB, the 8-bit ALPHA blend with COLCLAMP and As in the alpha
+lane, FBMSK and the post chain. The depth-write-off pipeline draws the ZBUF.ZMSK=1 items (reflection and alpha-only
+glass/shadow). `GT4_COREGS3_CAR_TEXTURES=0` keeps the legacy path, whose code is unchanged.
+
+Measured (night race, 3x, the car-only present, the split off): the switch changes 26,877 of 52,900 px in the player box
+(mean 9.26 levels); near-car mask means live legacy 20.5/20.1/19.6, live textured 9.7/8.1/8.3 (red-dominant 11.4%),
+offline textured 9.5/9.3/8.4 (6.5%). Aligned against the offline textured+reflection render the live textured car gives
+PSNR 19.0-19.7 dB, mean 12.7-14.8, pct_bad 37.6-45.8% (target 28 / 3 / 10); the legacy control against the offline base
+reaches 31.4 / 1.97 / 5.9% on the same alignment, so the harness aligns and the remaining gap is the textured content.
+The GPU reflection fragment count is not instrumented yet (the +/-5% gate is unmeasured). The store decoupling keeps the
+car-only A/B's live records (`GT4_COREGS3_LIVE_WORLD=0` no longer disables the store). Checks: CTest coregs3 21/21,
+Python 18/18, the 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B), clean rebuild (`330e3dff7048e1bba794b2f24a8276637554b518a3fe45877cb65fd2f3b6a51d`).
+Evidence `build/evidence-live-world/`.

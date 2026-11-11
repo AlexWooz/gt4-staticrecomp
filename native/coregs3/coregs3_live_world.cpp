@@ -18,7 +18,8 @@ namespace {
 struct Store {
   std::mutex mutex;
   bool configured = false;
-  bool active = false;
+  bool active = false;   // the store (job sources/records/VRAM base)
+  bool world = true;     // the world draw switch (GT4_COREGS3_LIVE_WORLD)
   // Pending job -> the packet addresses it was posted for, in post order (the EE posts before the worker executes).
   std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> job_addresses;
   std::deque<std::uint64_t> pending_order;
@@ -89,15 +90,16 @@ void configure_from_environment() noexcept {
   const std::lock_guard<std::mutex> lock(s.mutex);
   if (s.configured) return;
   s.configured = true;
+  // The store is on whenever the present layer runs: the car pass binds its textures from the same live job records
+  // as the world, including in the world-off A/B.
+  s.active = true;
   const char *text = std::getenv("GT4_COREGS3_LIVE_WORLD");
-  if (text == nullptr || *text == '\0') {
-    s.active = true;
+  if (text == nullptr || *text == '\0' || std::strcmp(text, "1") == 0) {
+    s.world = true;
   } else if (std::strcmp(text, "0") == 0) {
-    s.active = false;
-  } else if (std::strcmp(text, "1") == 0) {
-    s.active = true;
+    s.world = false;
   } else {
-    s.active = false;
+    s.world = false;
     std::fprintf(stderr, "[coregs3] GT4_COREGS3_LIVE_WORLD=%s is not 0 or 1; the live world stays off\n", text);
   }
 }
@@ -114,10 +116,17 @@ bool active() noexcept {
   return s.active;
 }
 
+bool world_enabled() noexcept {
+  Store &s = store();
+  const std::lock_guard<std::mutex> lock(s.mutex);
+  return s.world;
+}
+
 void set_active(bool active) noexcept {
   Store &s = store();
   const std::lock_guard<std::mutex> lock(s.mutex);
   s.active = active;
+  s.world = active;
   s.configured = true;
 }
 
