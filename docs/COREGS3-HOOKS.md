@@ -2738,3 +2738,8 @@ The GPU reflection fragment count is not instrumented yet (the +/-5% gate is unm
 car-only A/B's live records (`GT4_COREGS3_LIVE_WORLD=0` no longer disables the store). Checks: CTest coregs3 21/21,
 Python 18/18, the 3x off/shadow gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B), clean rebuild (`330e3dff7048e1bba794b2f24a8276637554b518a3fe45877cb65fd2f3b6a51d`).
 Evidence `build/evidence-live-world/`.
+Follow-up: per-frame, the live car table matches the offline frame-0 control exactly (116 draws, 335 items, 219
+textured / 80 reflected / 36 no-record / 0 refused at VBlanks 7398-7400; the F8 car counters are cumulative). Query 1
+(precise) now brackets the reflection groups (80 ranges, 8,460 vertices per frame), but the occlusion-query readback
+returns 0 for every car query (and the world query), so the fragment gate is unmeasured; the query plumbing needs its
+own fix. Build `d4c0ea0e4e077d9bf7b2c0345c77cf4533633337197e032febbd269f37257764`: CTest 21/21, Python 18/18, 3x gate COREGS3-NIGHT-CHECK-OK.

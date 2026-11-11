@@ -1150,12 +1150,13 @@ void print_report(std::FILE *out) noexcept {
                  static_cast<unsigned long long>(load(p.world_light_vertices_fallback)));
   if (load(p.car_textured_items) != 0 || load(p.car_reflection_items) != 0 || load(p.car_refused_items) != 0)
     std::fprintf(out,
-                 "[coregs3] car textures: textured %llu reflection %llu no_record %llu refused %llu atlas %llu\n",
+                 "[coregs3] car textures: textured %llu reflection %llu no_record %llu refused %llu atlas %llu fragments %llu\n",
                  static_cast<unsigned long long>(load(p.car_textured_items)),
                  static_cast<unsigned long long>(load(p.car_reflection_items)),
                  static_cast<unsigned long long>(load(p.car_no_record_items)),
                  static_cast<unsigned long long>(load(p.car_refused_items)),
-                 static_cast<unsigned long long>(load(p.car_atlas_textures)));
+                 static_cast<unsigned long long>(load(p.car_atlas_textures)),
+                 static_cast<unsigned long long>(load(p.car_reflection_fragments)));
   // Per-family and per-status lighting detail of the live layer (coregs3_lighting.hpp programs). Cumulative since the
   // process start; a draw may appear in more than one family because the capture mixes programs inside a draw.
   for (std::uint32_t program = 0; program < kLightProgramCount; ++program) {

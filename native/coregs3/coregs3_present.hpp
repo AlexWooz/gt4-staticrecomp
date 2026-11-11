@@ -163,6 +163,8 @@ struct Counters {
   std::atomic<std::uint64_t> car_reflection_items{0};
   std::atomic<std::uint64_t> car_no_record_items{0};
   std::atomic<std::uint64_t> car_refused_items{0};
+  std::atomic<std::uint64_t> car_reflection_fragments{0};  // the reflection items' occlusion-query samples (the
+                                                           // offline control writes 20,302 of 23,034 candidates)
   std::atomic<std::uint64_t> car_atlas_textures{0};
   std::atomic<std::uint64_t> world_refused_draws{0};
   std::atomic<std::uint64_t> world_excluded_itop{0};

@@ -2326,9 +2326,14 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   ``GT4_COREGS3_CAR_TEXTURES=0`` keeps the legacy path (code unchanged). Measured: the car changes (26,877/52,900 px,
   mean 9.26) and matches the offline textured level (near-car mean 9.7/8.1/8.3 vs 9.5/9.3/8.4), but the aligned
   acceptance gate is **not met** (PSNR 19.0-19.7, mean 12.7-14.8, pct_bad 37.6-45.8% vs 28 / 3 / 10%; the legacy control
-  reaches 31.4 / 1.97 / 5.9% against the offline base). Counters 878/323/144/0 over the run (per frame ~146/54/24; the
-  control 219/80/36); the reflection fragment count is not yet instrumented. Checks: CTest coregs3 **21/21**, Python
-  **18/18**, the 3x gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames, capture 4,496,552 B), clean rebuild (`330e3dff7048e1bba794b2f24a8276637554b518a3fe45877cb65fd2f3b6a51d`).
+  reaches 31.4 / 1.97 / 5.9% against the offline base). Follow-up on merged `40faa459`: per frame the table matches the
+  offline frame-0 control exactly (116 draws, 335 items, 219 textured / 80 reflected / 36 no-record / 0 refused at
+  VBlanks 7398-7400); the earlier 146/54/24 averages divided the cumulative counters of four frames. The reflection
+  fragment count is instrumented (query 1 around the 80 reflection ranges, 8,460 vertices/frame), but the occlusion
+  readback returns 0 for every car query and the world query, so the +/-5% gate is unmeasured. Aligned comparison still
+  fails (18-20 dB textured; base control 24 dB on the offline ctex mask at (-12,-16) vs the study's 36 dB on its run).
+  Checks: CTest coregs3 **21/21**, Python **18/18**, the 3x gate COREGS3-NIGHT-CHECK-OK (8,997 VBlanks, 1,686 racing, 0
+  clock/digest/state differences, 13/13 frames, capture 4,496,552 B), clean rebuild (`d4c0ea0e4e077d9bf7b2c0345c77cf4533633337197e032febbd269f37257764`).
   Journal entry of 2026-11-11; hooks §38. The C: system volume was found full (0/510 GB); the build TEMP was redirected
   to O: and the owner should free space.
 

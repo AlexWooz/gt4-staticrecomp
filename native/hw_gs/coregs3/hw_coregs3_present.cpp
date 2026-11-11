@@ -344,7 +344,7 @@ struct PresentLayer::Impl {
   bool world_valid = false;
   bool world_pending = false;  // a claimed frame the world has not been built for yet
   std::uint64_t last_world_samples = 0;  // occlusion-query samples of the last tick's world draws
-  std::uint64_t last_car_samples = 0;    // and of its car draws (diagnostic; not reported as a gate)
+  std::uint64_t last_reflection_samples = 0;  // and of the car table reflection items (query 1)
   std::uint32_t last_world_draw_calls = 0;
   // The empty base SLM image: the live world decodes only the windows a job's own record carries, so a texture page the
   // capture does not cover is refused by the decoder instead of reading stale bytes.
@@ -1352,15 +1352,23 @@ struct PresentLayer::Impl {
     }
     car_live_records.clear();
     car_live_map.clear();
+    std::uint32_t car_draws_seen = 0;
+    std::uint32_t car_items_seen = 0;
+    std::uint32_t car_missing_records = 0;
     std::vector<std::uint32_t> addresses;
     for (const gt4::coregs3::CapturedDraw &draw : frame.draws) {
       if (draw.pass != gt4::coregs3::kPassCars) continue;
+      ++car_draws_seen;
+      car_items_seen += draw.item_count;
       for (std::uint32_t index = 0; index < draw.item_count; ++index) {
         const gt4::coregs3::CapturedItem &item = draw.items[index];
         if (item.packet_bytes == 0 || car_live_map.count(item.address) != 0) continue;
         const std::shared_ptr<const gt4::coregs3::live_world::JobTexture> record =
             gt4::coregs3::live_world::find(item.address);
-        if (record == nullptr) continue;
+        if (record == nullptr) {
+          ++car_missing_records;
+          continue;
+        }
         gt4::coregs3::VramRecord vram;
         vram.kind = gt4::coregs3::vram::kRecordJobTexture;
         vram.label = static_cast<std::uint32_t>(record->job);
@@ -1399,6 +1407,16 @@ struct PresentLayer::Impl {
       counters_out.car_no_record_items.fetch_add(texture_counters.items_no_texture, std::memory_order_relaxed);
       counters_out.car_refused_items.fetch_add(texture_counters.records_refused, std::memory_order_relaxed);
     }
+    if (present_debug)
+      std::fprintf(stderr,
+                   "[coregs3] car table: VBlank %llu draws %u items %u unique %zu live records %zu missing %u live "
+                   "tap %d textured %llu reflected %llu no_texture %llu refused %llu\n",
+                   static_cast<unsigned long long>(frame.vblank), car_draws_seen, car_items_seen, addresses.size(),
+                   car_live_records.size(), car_missing_records, live_tap ? 1 : 0,
+                   static_cast<unsigned long long>(texture_counters.items_textured),
+                   static_cast<unsigned long long>(texture_counters.items_reflected),
+                   static_cast<unsigned long long>(texture_counters.items_no_texture),
+                   static_cast<unsigned long long>(texture_counters.records_refused));
     car_draws.reserve(frame.draws.size());
     for (const gt4::coregs3::CapturedDraw &draw : frame.draws) {
       if (draw.pass != gt4::coregs3::kPassCars) continue;
@@ -2262,7 +2280,7 @@ struct PresentLayer::Impl {
     // TASK-090 live world: the sky first (background: no depth test or write), then the far underlay and the course
     // (depth = 1/cw, GEQUAL like the car pass, so the world and the cars occlude each other correctly), then the cars.
     if (live_world_enabled && world_valid && !world_ranges.empty()) {
-      if (queries_enabled) gt4_hwd_vkCmdBeginQuery(command, query_pool, 0, 0);
+      if (queries_enabled) gt4_hwd_vkCmdBeginQuery(command, query_pool, 0, VK_QUERY_CONTROL_PRECISE_BIT);
       const VkDeviceSize world_offset = 0;
       gt4_hwd_vkCmdBindVertexBuffers(command, 0, 1, &world_vertex_buffer, &world_offset);
       gt4_hwd_vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, world_sky_pipeline);
@@ -2290,14 +2308,20 @@ struct PresentLayer::Impl {
         if (!range.sky) draw_world_range(range);
       if (queries_enabled) gt4_hwd_vkCmdEndQuery(command, query_pool, 0);
     }
-    if (queries_enabled) gt4_hwd_vkCmdBeginQuery(command, query_pool, 1, 0);
     const VkDeviceSize offset = 0;
     gt4_hwd_vkCmdBindVertexBuffers(command, 0, 1, &vertex_buffer, &offset);
     if (car_textures_frame) {
       // TASK-090 car pass round: the textured path, one draw per per-item range; the depth-write selection is the
-      // ZBUF.ZMSK rule (the reflection and the alpha-only glass/shadow items use the no-write pipeline).
+      // ZBUF.ZMSK rule (the reflection and the alpha-only glass/shadow items use the no-write pipeline). The reflection
+      // items are bracketed by query 2: one begin/end run per contiguous reflection group (the loop looks ahead).
       VkPipeline bound = VK_NULL_HANDLE;
-      for (const CarRange &range : car_ranges) {
+      bool reflection_query = false;
+      for (std::size_t range_index = 0; range_index < car_ranges.size(); ++range_index) {
+        const CarRange &range = car_ranges[range_index];
+        if (queries_enabled && range.reflection && !reflection_query) {
+          gt4_hwd_vkCmdBeginQuery(command, query_pool, 1, VK_QUERY_CONTROL_PRECISE_BIT);
+          reflection_query = true;
+        }
         const VkPipeline selected = range.depth_write ? car_pipeline : car_nodepth_pipeline;
         if (selected != bound) {
           gt4_hwd_vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, selected);
@@ -2308,6 +2332,11 @@ struct PresentLayer::Impl {
         gt4_hwd_vkCmdPushConstants(command, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof push, &push);
         gt4_hwd_vkCmdDraw(command, range.count, 1, range.first, 0);
+        const bool next_reflection = range_index + 1 < car_ranges.size() && car_ranges[range_index + 1].reflection;
+        if (queries_enabled && reflection_query && !next_reflection) {
+          gt4_hwd_vkCmdEndQuery(command, query_pool, 1);
+          reflection_query = false;
+        }
       }
     } else {
       gt4_hwd_vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
@@ -2321,7 +2350,6 @@ struct PresentLayer::Impl {
         gt4_hwd_vkCmdDraw(command, range.count, 1, range.first, 0);
       }
     }
-    if (queries_enabled) gt4_hwd_vkCmdEndQuery(command, query_pool, 1);
     gt4_hwd_vkCmdEndRenderPass(command);
     {
       // The next reader is the present copy, the dump readback (a transfer) or the next tick's restore copy.
@@ -2354,14 +2382,31 @@ struct PresentLayer::Impl {
       return false;
     }
     last_world_samples = 0;
-    last_car_samples = 0;
+    last_reflection_samples = 0;
     if (queries_enabled) {
       std::uint64_t results[2] = {0, 0};
       if (gt4_hwd_vkGetQueryPoolResults(device, query_pool, 0, 2, sizeof results, results, sizeof(std::uint64_t),
                                         VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
         last_world_samples = results[0];
-        last_car_samples = results[1];
+        last_reflection_samples = results[1];
+        gt4::coregs3::present::mutable_counters().car_reflection_fragments.store(last_reflection_samples,
+                                                                                 std::memory_order_relaxed);
       }
+    }
+    if (present_debug && car_textures_frame) {
+      std::size_t reflection_ranges = 0;
+      std::uint64_t reflection_vertices = 0;
+      for (const CarRange &range : car_ranges)
+        if (range.reflection) {
+          ++reflection_ranges;
+          reflection_vertices += range.count;
+        }
+      std::fprintf(stderr,
+                   "[coregs3] car draw: ranges %zu reflection ranges %zu reflection vertices %llu reflection samples "
+                   "%llu world samples %llu\n",
+                   car_ranges.size(), reflection_ranges, static_cast<unsigned long long>(reflection_vertices),
+                   static_cast<unsigned long long>(last_reflection_samples),
+                   static_cast<unsigned long long>(last_world_samples));
     }
     destroy_target_view();
     return true;

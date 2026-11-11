@@ -1,5 +1,17 @@
 # Current Status
 
+Follow-up (same day, merged `40faa459`): the per-frame car table at VBlanks 7398-7400 now reports **draws 116, items
+335, unique 334, textured 219, reflected 80, no-record 36, refused 0**, exactly the offline frame-0 control; the earlier
+146/54/24 averages divided the cumulative counters of four frames (878/323/144). The same build prints the per-frame
+car table and car draw lines under `GT4_COREGS3_PRESENT_DEBUG` (ranges 335, reflection ranges 80, reflection vertices
+8,460). The reflection fragment gate is instrumented with query 1 (precise) around each contiguous reflection group,
+but the occlusion-query readback returns **0 for every car query**, the whole car pass included, and for the world
+query, so the +/-5% fragment gate is still unmeasured; the query plumbing (pre-existing diagnostic) needs its own fix.
+The aligned content comparison still fails (18-20 dB on the study-style masks; the base control calibrates to 24 dB on
+the offline ctex mask at shift (-12,-16), against the study's 36 dB on its own run), dominated by the live run's
+pose/timing against the capture, not by the tables. Gates on the final build (d4c0ea0e4e077d9bf7b2c0345c77cf4533633337197e032febbd269f37257764): CTest coregs3 **21/21**,
+Python **18/18**, the 3x gate **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13).
+
 ## 2026-11-11: the car pass textures and reflection, first implementation (TASK-090, branch `task/090-live-world`)
 
 Following `docs/COREGS3-CAR-PASS-STUDY.md` the live present now builds a per-frame **car texture table** and binds it: the
