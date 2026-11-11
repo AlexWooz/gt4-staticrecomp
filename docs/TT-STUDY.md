@@ -170,7 +170,7 @@ performance, license guard, IPU, SPU2 or memory card capsule (VU microcode on th
   the license setup as well as the inputs.
 - **Exact decrypt.** `native/tt_license_decrypt.*` ports the oracle's CRC-confirmed beam search (chop or chop + 1 ulp per
   div.s, the measured priors, saturation step <= 400, accepted only when the game's own check passes).
-  `scripts/tt_license_units.py` adds one host call at TT's cipher entry (as `camera360_units.py` does for the camera);
+  `scripts/tt_units.py` adds one host call at TT's cipher entry (as `camera360_units.py` does for the camera);
   the call decrypts from the cipher text the game passes, sets v0 = 1 and returns, or leaves the game's code to run
   (guard behind it). `GT4_TT_LICENSE_EXACT=0` turns it off. GT4's units, capsules and pins are untouched.
 - **Result (owner, License 1):** `exact (CRC confirmed, saturation step 241, 78 div.s one ulp up, ~850 ms)`; the guard
@@ -227,3 +227,17 @@ of the container or the microcode.
   as sharp as GT4. Menus stay 480i, as in GT4.
 - Launcher tests: 668 pass; `gs_golden` and `launch_contract`'s session INI comparison fail on this checkout because the
   golden INI was checked out with doubled CRs (`\r\r\n`), before and after the TT changes.
+
+## Controls: trigger range and sticks [C]
+
+2026-11-11, branch `task/tt-target`.
+
+- **Triggers (TASK-161).** TT's race input 0x00403810 has v2.00 `func_0043BBC0`'s pressure switch unchanged in behaviour:
+  four cases with the same flags, stores and divisors (0x2 / +8 / 35 throttle, 0x4 / +10 / 65 brake, 0x10 / +14 / 20,
+  0x8 / +12 / 35), only with the divisors in saved registers (s1, s6, s5). Without v2.00's statement replacements the host's
+  full-range input met the stock `min(100 * 2p / d, 256)` scale, so full throttle came early in the trigger's travel.
+  `scripts/tt_units.py` (formerly `tt_license_units.py`; it now applies every TT unit edit) replaces the doubling and the
+  divisor of the throttle and brake cases (0x00403B6C / 0x00403BA0 and 0x00403BC8 / 0x00403BFC), exactly as v2.00's.
+  `tests/python/test_tt_units.py` covers the edits and their refusals. Owner: the triggers feel like GT4's.
+- **Sticks.** GT4Recomp skips GT4's built-in stick dead zone (bytes 90..165, knot table v2.00 0x0064C4D8). TT's table
+  (0x00598438) is byte-identical and the code that reads it matched, so the host's stick rule is already right for TT.

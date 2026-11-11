@@ -427,7 +427,7 @@ if(GT4_TARGET STREQUAL "tt")
     add_executable(tt_hooks_fixture tt_hooks_fixture.cpp license_guard.cpp race_widescreen.cpp race_display.cpp)
     target_compile_options(tt_hooks_fixture PRIVATE /W4)
     add_test(NAME native_tt_hooks COMMAND $<TARGET_FILE:tt_hooks_fixture>)
-    # TT license demos: exact, CRC-confirmed host decrypt (scripts/tt_license_units.py adds the call to TT's cipher).
+    # TT license demos: exact, CRC-confirmed host decrypt (scripts/tt_units.py adds the call to TT's cipher).
     add_library(gt4_tt_license STATIC tt_license_decrypt.cpp)
     target_compile_options(gt4_tt_license PRIVATE /W4)
     target_include_directories(gt4_tt_license PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1010,7 +1010,7 @@ if(GT4_TARGET STREQUAL "spec2")
     set_target_properties(gt4vulkan PROPERTIES OUTPUT_NAME gt4vulkan-spec2)
 elseif(GT4_TARGET STREQUAL "tt")
     set_target_properties(gt4vulkan PROPERTIES OUTPUT_NAME gt4vulkan-tt)
-    # The host side of the call scripts/tt_license_units.py adds to TT's license cipher; a TT library built from the plain
+    # The host side of the call scripts/tt_units.py adds to TT's license cipher; a TT library built from the plain
     # units leaves it unused.
     target_sources(gt4vulkan PRIVATE tt_license_decrypt_hook.cpp)
     target_link_libraries(gt4vulkan PRIVATE gt4_tt_license)

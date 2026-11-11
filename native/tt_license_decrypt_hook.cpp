@@ -1,4 +1,4 @@
-// Tourist Trophy: the host call that scripts/tt_license_units.py adds at the entry of TT's license cipher (0x004A4228,
+// Tourist Trophy: the host call that scripts/tt_units.py adds at the entry of TT's license cipher (0x004A4228,
 // v2.00 func_00579E00): decrypt(a0 = destination, a1 = source, a2 = size, a3 = key), returns v0 = game check passed.
 //
 // The hook tries the exact, CRC-confirmed decrypt (tt_license_decrypt.hpp) on the cipher text the game passes. When it
