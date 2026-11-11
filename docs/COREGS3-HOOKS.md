@@ -2120,7 +2120,7 @@ differ. The fix covers both.
   diagnostic only; it runs on the GS worker inside `vsync_now`, exactly where the removed code ran.
 - Runs of 9000 frames, 3x night race, headless, 120 Hz present, serial on a quiet machine. A run without the dry pass
   completes (`control-no-dry-pass`, 7500 frames, exit 0).
-- Pre-fix ASan: the fixture report is `build/evidence-crash-race/asan/fixture-prefix.txt`; the game under ASan with the
+- Pre-fix ASan: the fixture report is `build/evidence-crash-race/asan/fixture-prefix-niocf.txt`; the game under ASan with the
   dry pass needs the CRT artifacts above silenced and did not reach the race-start window before an unrelated process
   exit, so the fixture is the ASan control (`asan-game-prefix/log.txt` records that limit).
 - Post-fix acceptance: `GT4_COREGS3_DRY_PASS=1`, 9000 frames, two runs on the acceptance binary
