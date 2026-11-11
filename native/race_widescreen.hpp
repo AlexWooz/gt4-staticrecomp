@@ -77,6 +77,11 @@ std::uint32_t widescreen_preset_address(bool wide, bool ntsc);
 inline constexpr std::uint32_t kOwnerSettleVblanks = 30;
 inline constexpr std::uint32_t kOwnerLateSettleVblanks = 600;
 
+// Tourist Trophy publishes its game-data object once and never replaces it (the RAM trace in docs/TT-STUDY.md: one owner,
+// 0x008274B0, from VBlank 10 on), so there the first object is the live one and kOwnerSettleVblanks of stability are enough;
+// waiting for a move would hold the 4:3 boot state for kOwnerLateSettleVblanks (10 s). v2.00 and Spec II keep the move rule.
+inline constexpr bool kOwnerMovesAtBoot = ::gt4::target::active().id != ::gt4::target::Id::tt;
+
 struct OwnerSettle {
   std::uint32_t current = 0;  // owner pointer seen at the last VBlank
   std::uint32_t stable = 0;   // consecutive VBlanks with the same non-zero pointer

@@ -52,6 +52,7 @@
   // The short names of the versions (owner, 2026-10-23); the full game names stay in Settings > Games.
   // Read when used, so the name follows a language change.
   function versionNameOf(id) {
+    if (id === "tt") return GT4.t("home.tt");
     return id === "spec2" ? GT4.t("home.spec2") : GT4.t("home.normal");
   }
 
@@ -145,6 +146,34 @@
         [versionPrev, versionWindow, versionNext]);
       var paintedId = null;
       var slideFrom = 0;
+
+      // The window is just wider than the longest version name of the game list (it was a fixed 64 px for "Normal" and
+      // "Spec II"; "Tourist Trophy" is longer). Measured with a hidden name in the page's own font, so it follows the
+      // language and the list.
+      var fittedSignature = "";
+      function fitVersionWindow() {
+        var names = gameList.map(function (game) { return versionNameOf(game.id); });
+        if (names.indexOf(versionNameOf(selectedId)) < 0) names.push(versionNameOf(selectedId));
+        var signature = names.join("|");
+        if (signature === fittedSignature) return;
+        var widest = 0;
+        names.forEach(function (name) {
+          var probe = h("span", { class: "version-name", text: name });
+          probe.style.position = "absolute";
+          probe.style.inset = "auto";
+          probe.style.visibility = "hidden";
+          versionWindow.appendChild(probe);
+          widest = Math.max(widest, probe.getBoundingClientRect().width);
+          probe.remove();
+        });
+        if (widest > 0) {
+          // Only a real measurement counts: before the page is in the document every width reads 0, so try again later.
+          fittedSignature = signature;
+          versionWindow.style.width = Math.max(64, Math.ceil(widest) + 8) + "px";
+        } else {
+          window.requestAnimationFrame(fitVersionWindow);
+        }
+      }
       var stopButton = h("button", { class: "btn", type: "button" }, GT4.t("home.stop"));
       var stateText = h("span", { class: "state", text: GT4.t("home.running") });
       var running = h("div", { class: "running" }, [h("span", { class: "dot" }), stateText, stopButton]);
@@ -196,7 +225,8 @@
         var locked = isRunning || gameList.length < 2;
         versionPrev.disabled = locked;
         versionNext.disabled = locked;
-        var label = selectedId === "gt4" || selectedId === "spec2" ? versionNameOf(selectedId) : (game ? game.name : "");
+        var label = selectedId === "gt4" || selectedId === "spec2" || selectedId === "tt" ? versionNameOf(selectedId) : (game ? game.name : "");
+        fitVersionWindow();
         showName(label, paintedId !== null && paintedId !== selectedId ? (slideFrom || 1) : 0);
         versionWindow.setAttribute("title", game ? (game.title || game.name) : "");
         paintedId = selectedId;

@@ -70,6 +70,8 @@ pub enum Unsupported {
     /// SCUS-97436 whose executable is not the pinned Spec II 1.10 one. `beta` is true for the unmodified GT4 Online
     /// Public Beta (same serial, a different executable: it would need its own patch map and translation).
     Spec2Executable { beta: bool },
+    /// SCUS-97502 (Tourist Trophy) whose code (`CORE.TT`, loader or IOP modules) is not the pinned USA release's.
+    TtCode,
     /// A PAL or Asian release (SCES, SLES, SCPS, SLPS, ...).
     OtherRegion { serial: String },
     /// SCUS-97328 whose game code (`CORE.GT4`) differs from the supported one.
@@ -120,6 +122,7 @@ impl SetupError {
                     Unsupported::Spec2Executable { beta: false } => {
                         messages::text("setup.spec2_other_program", language).into()
                     }
+                    Unsupported::TtCode => messages::text("setup.tt_other_code", language).into(),
                     Unsupported::OtherRegion { serial } => {
                         messages::render("setup.other_region", language, &[("serial", serial)])
                     }

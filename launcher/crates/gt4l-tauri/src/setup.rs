@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use gt4l_core::games::{self, Game, GT4, SPEC2};
+use gt4l_core::games::{self, Game, GT4, SPEC2, TT};
 use gt4l_core::gpu::GpuDevice;
 use gt4l_core::gs_release::Step;
 use gt4l_core::launch::{self, SetupRenderer};
@@ -20,6 +20,7 @@ use gt4l_core::LAUNCHER_VERSION;
 use gt4l_disc::identify::{identify, DiscGame};
 use gt4l_disc::setup::{self as disc_setup, SetupError, SetupRequest, Stage};
 use gt4l_disc::spec2::{self as disc_spec2, Spec2Request};
+use gt4l_disc::tt::{self as disc_tt, TtRequest};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
@@ -209,6 +210,7 @@ pub fn choose_disc_path_for(shared: &Shared, path: &Path, requested: Option<&str
             let game: &'static Game = match found.game {
                 DiscGame::Gt4 => &GT4,
                 DiscGame::Spec2 => &SPEC2,
+                DiscGame::Tt => &TT,
             };
             let summary = found.summary;
             let mut state = lock(shared);
@@ -300,6 +302,7 @@ pub fn start_with(
             Ok(found) => Some(match found.game {
                 DiscGame::Gt4 => &GT4,
                 DiscGame::Spec2 => &SPEC2,
+                DiscGame::Tt => &TT,
             }),
             Err(error) => {
                 let message = error.user_message_in(state::current_language());
@@ -312,7 +315,7 @@ pub fn start_with(
         },
         None => None,
     };
-    let (disc, pins, spec2_pins, game, installed_before, dirs, cancel, install_dir) = {
+    let (disc, pins, spec2_pins, tt_pins, game, installed_before, dirs, cancel, install_dir) = {
         let mut state = lock(&shared);
         if state.setup_busy {
             return Err(messages::text("setup.already_running", state::current_language()).into());
@@ -332,7 +335,7 @@ pub fn start_with(
         state.setup_outcome = SetupOutcome::None;
         state.setup_run = SetupRun { step: "copying".into(), ..SetupRun::default() };
         state.setup_cancel.store(false, Ordering::Relaxed);
-        (disc, state.pins.clone(), state.spec2_pins.clone(), game, installed_before, state.game_dirs(game), state.setup_cancel.clone(), state.install_dir.clone())
+        (disc, state.pins.clone(), state.spec2_pins.clone(), state.tt_pins.clone(), game, installed_before, state.game_dirs(game), state.setup_cancel.clone(), state.install_dir.clone())
     };
     let handle = std::thread::spawn(move || {
         // Setup always writes the data folder's root, even when older game files are read from another folder.
@@ -385,6 +388,18 @@ pub fn start_with(
                 },
                 &mut report,
             ),
+            Some(DiscGame::Tt) => disc_tt::run(
+                &TtRequest {
+                    disc: &disc,
+                    prepared: &prepared,
+                    staging: &staging,
+                    install_dir: &install_dir,
+                    pins: &tt_pins,
+                    launcher_version: LAUNCHER_VERSION,
+                    cancel: &cancel,
+                },
+                &mut report,
+            ),
             _ => disc_setup::run(
                 &SetupRequest {
                     disc: &disc,
@@ -430,6 +445,9 @@ pub fn start_with(
         );
         if game.id == SPEC2.id && !receipt.qualified_dump {
             state::log(&dirs, "disc is accepted as a Spec II 1.10 variant: its game code (executable and IOP modules) is 1.10's but the image hash is not pinned");
+        }
+        if game.id == TT.id && !receipt.qualified_dump {
+            state::log(&dirs, "disc is accepted as a Tourist Trophy (USA) variant: its game code (CORE.TT, loader and IOP modules) is the pinned release's but the image hash is not pinned");
         }
 
         let renderer_note = prepare_renderer(&shared, &dirs, &notify, &renderer, &coregs20, game, installed_before.is_empty());

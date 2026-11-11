@@ -205,3 +205,25 @@ performance, license guard, IPU, SPU2 or memory card capsule (VU microcode on th
 Recommendation: the first milestone (boot to title with every hook disabled) looks reachable with
 existing tooling. The work is mostly the translation pipeline and pins, not new reverse-engineering
 of the container or the microcode.
+
+## Launcher integration and display holds [C]
+
+2026-11-11, branch `task/tt-target`.
+
+- **Third game in the launcher.** `gt4l_core::games::TT` (id `tt`, `game\gt4-tt.exe`, ELF `SCUS_975.02`, card
+  `BASCUS-97502GAMEDATA` as read from a TT card). `gt4l-disc` identifies SCUS-97502 by its code (`docs/inputs/tt-iso.json`:
+  `CORE.TT`, the loader, `SYSTEM.CNF`, `IOPRP300.IMG` and the 16 IRX modules) and prepares the ELF in Rust
+  (`tt_elf.rs`: Salsa20/20 + CRC-32C + the v2.00 inflate + the `build_elf` layout). On the contributor's disc it derives
+  the pinned ELF (`97bf58d3...`) in under half a second (`tests/tt_disc.rs`, ignored by default). Setup, the installed
+  check, process names, the home selector ("Tourist Trophy", window sized to the longest name) and the Saves tags handle
+  TT; a different SCUS-97502 code is refused with its own message (en-US, pt-BR). Owner test: install from the ISO,
+  switch games and play.
+- **16:9 hold settle.** TT publishes one game-data object and never replaces it, so the v2.00 rule (wait for one move,
+  else 600 VBlanks) held 4:3 for about 10 s. `kOwnerMovesAtBoot` is false for TT: the hold settles after 30 stable
+  VBlanks (fresh card: VBlank 37).
+- **Race display 480p (`GT4_FORCE_480P`) mapped.** Option + 0x1718 (as Spec II); setter 0x003FDBA8 and race-start reader
+  0x003FCE58 match v2.00. TT's names are "normal", "480p", "1080i", "480i_frame"; the hold rewrites 0 and 2 to 1 and keeps
+  3. Before it, every TT frame under CoreGS 2.0 was 480i and deinterlaced (softer than GT4's 480p races); owner: races now
+  as sharp as GT4. Menus stay 480i, as in GT4.
+- Launcher tests: 668 pass; `gs_golden` and `launch_contract`'s session INI comparison fail on this checkout because the
+  golden INI was checked out with doubled CRs (`\r\r\n`), before and after the TT changes.

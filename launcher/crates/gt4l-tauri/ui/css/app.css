@@ -313,7 +313,8 @@ body.is-idle .migration-bar.indeterminate .migration-fill { animation-play-state
 }
 .version-arrow:hover, .version-arrow:focus-visible { color: var(--white); border-color: rgba(255, 255, 255, 0.3); }
 .version-arrow:disabled { opacity: 0.3; }
-/* Just wider than the longest name ("SPEC II"), so the arrows sit close to the text as in the notes pager. */
+/* Just wider than the longest name, so the arrows sit close to the text as in the notes pager: 64 px fits "SPEC II";
+   home.js widens it to the longest name of the game list ("TOURIST TROPHY"). */
 .version-window { position: relative; width: 64px; height: 18px; overflow: hidden; }
 .version-name {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; white-space: nowrap;

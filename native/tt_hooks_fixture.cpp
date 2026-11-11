@@ -3,6 +3,7 @@
 
 #include "game_target.hpp"
 #include "license_guard.hpp"
+#include "race_widescreen.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -55,6 +56,22 @@ int main() {
             guard::loader_for_return(0x1101E4u) == 0u,
         "guarded call sites are TT's, never v2.00's");
   check(guard::manager_address(0x00900040u) == 0x00900040u + 0x1A24u, "guard writes where the TT virtual reads");
+
+  // Race display 480p: option + 0x1718, 0 normal, 1 480p, 2 1080i (TT also has 3 = 480i_frame, never rewritten).
+  check(h.race_display_index_offset == 0x1718u && h.race_display_index_normal == 0u && h.race_display_index_480p == 1u &&
+            h.race_display_index_1080i == 2u,
+        "race display index");
+
+  // 16:9 hold: TT's single game-data object counts as live after kOwnerSettleVblanks of stability (no boot move).
+  check(!gt4::display::kOwnerMovesAtBoot, "TT does not wait for a game-data pointer move");
+  {
+    gt4::display::OwnerSettle settle;
+    for (int vblank = 0; vblank < 10; ++vblank) check(!gt4::display::owner_settled(settle, 0u), "no owner yet");
+    int settled_at = -1;
+    for (int vblank = 0; vblank < 100 && settled_at < 0; ++vblank)
+      if (gt4::display::owner_settled(settle, 0x008274B0u)) settled_at = vblank;
+    check(settled_at == static_cast<int>(gt4::display::kOwnerSettleVblanks), "TT owner settles after the short wait");
+  }
 
   // Hooks that are still unmapped stay disabled.
   check(!target::available(h.camera_yaw_call_return) && !target::available(h.frame_update_functor) &&

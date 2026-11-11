@@ -63,6 +63,7 @@
 
     // The game tag of a save row: the game's name as the home version switch shows it (TASK-101 item 2).
     function gameTagText(gameId) {
+      if (gameId === "tt") return GT4.t("home.tt");
       return gameId === "spec2" ? GT4.t("home.spec2") : GT4.t("home.normal");
     }
 

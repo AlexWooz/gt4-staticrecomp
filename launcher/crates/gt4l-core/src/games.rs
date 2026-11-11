@@ -54,8 +54,21 @@ pub const SPEC2: Game = Game {
     replay_prefix: "BASCUS-97436",
 };
 
+/// Tourist Trophy (USA, SCUS-97502): an experimental third game on the same engine (`docs/TT-STUDY.md`). No official TT
+/// artwork is used: the page keeps the GT4Recomp logo, and the selector names the game.
+pub const TT: Game = Game {
+    id: "tt",
+    display_name: "Tourist Trophy",
+    serial: "SCUS-97502",
+    executable: "gt4-tt.exe",
+    elf_name: "SCUS_975.02",
+    logo_asset: "assets/logo-gt4.png",
+    save_folder: "BASCUS-97502GAMEDATA",
+    replay_prefix: "BASCUS-97502",
+};
+
 /// Every game, in display order.
-pub const GAMES: &[&Game] = &[&GT4, &SPEC2];
+pub const GAMES: &[&Game] = &[&GT4, &SPEC2, &TT];
 
 /// The game of an id (`gt4`, `spec2`).
 pub fn by_id(id: &str) -> Option<&'static Game> {
@@ -100,8 +113,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_table_names_two_games_with_their_own_programs() {
-        assert_eq!(GAMES.len(), 2);
+    fn the_table_names_its_games_with_their_own_programs() {
+        assert_eq!(GAMES.len(), 3);
         assert_eq!(by_id("gt4"), Some(&GT4));
         assert_eq!(by_id("spec2"), Some(&SPEC2));
         assert_eq!(by_id("gt5"), None);
@@ -114,6 +127,11 @@ mod tests {
         assert_ne!(GT4.executable, SPEC2.executable, "the two games cannot share one executable (decision 0072)");
         assert_eq!((GT4.save_folder, SPEC2.save_folder), ("BASCUS-97328GAMEDATA", "BASCUS-97436GAMEDATA"));
         assert_eq!((GT4.replay_prefix, SPEC2.replay_prefix), ("BASCUS-97328", "BASCUS-97436"));
+        // Tourist Trophy: its own program, ELF name and card names (BASCUS-97502GAMEDATA read from a TT card).
+        assert_eq!(by_id("tt"), Some(&TT));
+        assert_eq!((TT.executable, TT.elf_name, TT.serial), ("gt4-tt.exe", "SCUS_975.02", "SCUS-97502"));
+        assert_eq!((TT.save_folder, TT.replay_prefix), ("BASCUS-97502GAMEDATA", "BASCUS-97502"));
+        assert!(GAMES.iter().all(|game| game.id == TT.id || game.executable != TT.executable));
     }
 
     #[test]

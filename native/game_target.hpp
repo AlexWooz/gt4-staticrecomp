@@ -338,10 +338,14 @@ inline constexpr HookAddresses kTTHooks = {
     /* widescreen_preset_wide */ 0x585750u,
     /* widescreen_preset_4_3_ntsc */ 0x585780u,
     /* widescreen_preset_wide_ntsc */ 0x5857B0u,
-    /* race_display_index_offset */ 0u,
+    // TASK-080 race display 480p, mapped 2026-11-11: the index lives at option + 0x1718 (as in Spec II). The setter
+    // 0x003FDBA8 (v2.00 func_00437380, masked-identical) stores it at 0x1718 and accepts 0..3; the race-start reader
+    // 0x003FCE58 (v2.00 func_00436740) loads it from 0x1718. TT's name table (0x585670) is "normal", "480p", "1080i",
+    // "480i_frame": 0..2 mean what they mean in v2.00, and the hold leaves 3 (480i_frame) alone.
+    /* race_display_index_offset */ 0x1718u,
     /* race_display_index_normal */ 0u,
-    /* race_display_index_480p */ 0u,
-    /* race_display_index_1080i */ 0u,
+    /* race_display_index_480p */ 1u,
+    /* race_display_index_1080i */ 2u,
     /* init_monitor */ 0u,
     /* camera_call_return */ 0u,
     /* race_display_render */ 0u,

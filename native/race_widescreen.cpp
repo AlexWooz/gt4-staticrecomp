@@ -113,7 +113,7 @@ bool owner_settled(OwnerSettle &settle, std::uint32_t owner_pointer) {
     ++settle.stable;
   if (settle.stable < kOwnerSettleVblanks)
     return false;
-  return settle.moves > 0 || settle.stable >= kOwnerLateSettleVblanks;
+  return settle.moves > 0 || !kOwnerMovesAtBoot || settle.stable >= kOwnerLateSettleVblanks;
 }
 
 bool force_widescreen_at_vblank(std::uint8_t *ram, std::uint32_t ram_size, WidescreenState &state) {

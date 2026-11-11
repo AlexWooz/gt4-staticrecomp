@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "note": "Tourist Trophy (USA, SCUS-97502), the contributor's image studied in docs/TT-STUDY.md. Identity: serial, CORE.TT and the IOP code (IOPRP300.IMG and IRX/*). The derived ELF is CORE.TT decrypted (Salsa20/20, key PolyphonyDigital, CRC-32C trailer), inflated and laid out like scripts/spec2_beta_elf.py build_elf.",
+  "disc": {
+    "sha256": "3d89e633ef4c6eb74d42e7a471a013c706c283fd0fff53733ab00803ddaeccdd",
+    "size_bytes": 3004628992,
+    "name": "Tourist Trophy (USA)"
+  },
+  "system": {
+    "boot_path": "/SCUS_975.02;1",
+    "serial": "SCUS-97502",
+    "version": "1.00",
+    "video_mode": "NTSC"
+  },
+  "files": {
+    "/CORE.TT;1": {
+      "sha256": "52b32bef595cff8789d6898174e9a6420d239e2e4785255a929660828a18f789",
+      "size_bytes": 1849178
+    },
+    "/SCUS_975.02;1": {
+      "sha256": "d8ecfebe90a2de7ff7a620ed9324ef94af5e2b6fb8746f6dc1da4ddde51526fb",
+      "size_bytes": 281724
+    },
+    "/SYSTEM.CNF;1": {
+      "sha256": "be0f2ecc293683ee9537ec3cb1d668b42705f339a5a1120a0421ed3fc031b3da",
+      "size_bytes": 57
+    },
+    "/IOPRP300.IMG;1": {
+      "sha256": "782690377b32380f4a44cac19a542fd34c4b071c910d4a02dd8124e5f07e2e5a",
+      "size_bytes": 278465
+    },
+    "/IRX/DBCMAN.IRX;1": {
+      "sha256": "e32ba3492003b79f5d58b45113066264594069be46434c77d6a6f165d4b81124",
+      "size_bytes": 15653
+    },
+    "/IRX/DS2U_D.IRX;1": {
+      "sha256": "b4c3a4b4740d42695706c0d058a8d5ed886ec205628aa0826815b85f2d1b043d",
+      "size_bytes": 11821
+    },
+    "/IRX/LIBPDI.IRX;1": {
+      "sha256": "db0fa26e88af3897d298cb1b8cb53a9117271b143339f37c346461c31d8f3766",
+      "size_bytes": 14417
+    },
+    "/IRX/LIBSD.IRX;1": {
+      "sha256": "94915a3d9673e8a370e144ae493552d5e1f3956bb9ae5bd91e2da5f36c83ce7d",
+      "size_bytes": 30085
+    },
+    "/IRX/MCMAN.IRX;1": {
+      "sha256": "acdfe0f00ac589d1ebcd6e91228b038a28b5a171a518144269ad8f43170de8ae",
+      "size_bytes": 103677
+    },
+    "/IRX/MCSERV.IRX;1": {
+      "sha256": "6d39a475a6ef40b5fd7c0ba81b2f0237c10afbd1e5c41a7b1db1cc386e4b04bd",
+      "size_bytes": 7713
+    },
+    "/IRX/MTAPMAN.IRX;1": {
+      "sha256": "9ab9bf95f82a0ca71aec04284aee601ce8c4f14cc6d79b5cc62095395d4a3570",
+      "size_bytes": 10853
+    },
+    "/IRX/PADMAN.IRX;1": {
+      "sha256": "002d1428e87fcb0a8b99826d408e3bd524898183511a4374603c967fc2df5e01",
+      "size_bytes": 45925
+    },
+    "/IRX/PDICDVD.IRX;1": {
+      "sha256": "deeeb453a807b91263a9ed588b3deb6717cae210fd150f8a986760a4eb4d345e",
+      "size_bytes": 9597
+    },
+    "/IRX/PDISPU2.IRX;1": {
+      "sha256": "8c8934d81ef7a84449b7c324586d3384621194a0c8cc4ced722e11b524d86920",
+      "size_bytes": 19261
+    },
+    "/IRX/PDISTR.IRX;1": {
+      "sha256": "7b193930dd1288ddbe5c3fe5303393e0c7409199e0b054cd7eb2695d3bdebdac",
+      "size_bytes": 20853
+    },
+    "/IRX/PDIUSB.IRX;1": {
+      "sha256": "2f23840312e5c7e1474c5ebae69a33c0d47ed1a40f06428c0bf86fec7ede1a76",
+      "size_bytes": 25181
+    },
+    "/IRX/SIO2D.IRX;1": {
+      "sha256": "b07339d0b6ef6021ebb2bd8dba1138f3159b2cdfbf1b29df799694107107d330",
+      "size_bytes": 11289
+    },
+    "/IRX/SIO2MAN.IRX;1": {
+      "sha256": "739b8de6f3b739ef5036256fecf4d6274ba4caae195e81caa23506084dc83dcd",
+      "size_bytes": 5217
+    },
+    "/IRX/USBD.IRX;1": {
+      "sha256": "3e443c652b3bf639139706ef8b6b8c11dc5a03308af956b05f97e69a4840fd8c",
+      "size_bytes": 34993
+    },
+    "/IRX/USTORAGE.IRX;1": {
+      "sha256": "fc4ec7167a04f9e2a57ca0fb0ce6b76737e51d797cdb1ebbf544aedbbac352c4",
+      "size_bytes": 9685
+    }
+  },
+  "derived_elf": {
+    "file": "SCUS_975.02",
+    "sha256": "97bf58d31538d542e86898e300ebed8a6309881c7c67327d026e8e6a1b11b614",
+    "size_bytes": 5359868,
+    "entry": "0x00100008",
+    "data_bss_bytes": 8388608
+  }
+}

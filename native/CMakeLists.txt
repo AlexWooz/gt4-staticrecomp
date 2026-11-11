@@ -424,7 +424,7 @@ add_executable(license_guard_fixture license_guard_fixture.cpp license_guard.cpp
 target_compile_options(license_guard_fixture PRIVATE /W4)
 # Tourist Trophy (GT4_TARGET=tt): the TT hook table and the guard rule at TT's own Manager offset.
 if(GT4_TARGET STREQUAL "tt")
-    add_executable(tt_hooks_fixture tt_hooks_fixture.cpp license_guard.cpp)
+    add_executable(tt_hooks_fixture tt_hooks_fixture.cpp license_guard.cpp race_widescreen.cpp race_display.cpp)
     target_compile_options(tt_hooks_fixture PRIVATE /W4)
     add_test(NAME native_tt_hooks COMMAND $<TARGET_FILE:tt_hooks_fixture>)
     # TT license demos: exact, CRC-confirmed host decrypt (scripts/tt_license_units.py adds the call to TT's cipher).

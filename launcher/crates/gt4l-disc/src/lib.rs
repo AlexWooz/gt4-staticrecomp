@@ -12,8 +12,12 @@ pub mod spec2;
 pub mod spec2_elf;
 pub mod spec2_pins;
 pub mod testing;
+pub mod tt;
+pub mod tt_elf;
+pub mod tt_pins;
 
 pub use identify::{DiscGame, Identified};
 pub use pins::{Identity, Pins};
 pub use spec2_pins::Spec2Pins;
+pub use tt_pins::TtPins;
 pub use setup::{SetupError, SetupRequest, Stage};

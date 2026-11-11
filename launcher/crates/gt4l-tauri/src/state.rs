@@ -24,7 +24,8 @@ use gt4l_core::paths::{self, DataDirs, UserDirs};
 use gt4l_core::textures::{self, TextureLocation};
 use gt4l_disc::setup as disc_setup;
 use gt4l_disc::spec2 as disc_spec2;
-use gt4l_disc::{DiscGame, Pins, Spec2Pins};
+use gt4l_disc::tt as disc_tt;
+use gt4l_disc::{DiscGame, Pins, Spec2Pins, TtPins};
 use gt4saves::library::Library;
 
 use crate::discord_presence::DiscordPresence;
@@ -41,6 +42,8 @@ pub struct AppState {
     pub dirs: DataDirs,
     pub pins: Pins,
     pub spec2_pins: Spec2Pins,
+    /// Tourist Trophy (experimental third game, docs/TT-STUDY.md).
+    pub tt_pins: TtPins,
     pub config: ConfigFile,
     pub controls: Controls,
     /// The user data in use: `%APPDATA%\GT4Recomp`, or the 1.2.0 places until their move has happened.
@@ -251,10 +254,12 @@ impl AppState {
             libraries.insert(game.id, GameLibrary { library: opened.library, user: opened.user });
         }
         let spec2_pins = Spec2Pins::embedded()?;
+        let tt_pins = TtPins::embedded()?;
         let mut state = AppState {
             dirs,
             pins,
             spec2_pins,
+            tt_pins,
             config,
             controls,
             user_dirs: user,
@@ -329,6 +334,7 @@ impl AppState {
         let dirs = self.game_dirs(game);
         match DiscGame::from_id(game.id) {
             Some(DiscGame::Spec2) => disc_spec2::check_installed(&dirs.prepared(), &dirs.disc_folder(), &self.install_dir, &self.spec2_pins),
+            Some(DiscGame::Tt) => disc_tt::check_installed(&dirs.prepared(), &dirs.disc_folder(), &self.install_dir, &self.tt_pins),
             _ => disc_setup::check_installed(&dirs.prepared(), &dirs.disc_folder(), &self.install_dir, &self.pins),
         }
     }
