@@ -304,6 +304,26 @@ screen later than in the city scenes), so the arm needs a later car-strip press;
 **To run them:** `bash scripts/coregs2_bench/spec2-run.sh <scene> <name> build/spec2-215/gt4vulkan-spec2.exe`
 (no `WINDOW` for headless). The George V reference replay stays the existing `george` scene (VBlanks 20,400-21,300).
 
+**Tsukuba Wet fixed (2026-11-11):** the World path reaches the Arcade car screens about **2,000 VBlanks earlier** than the
+city path: the track cross at 13,000 lands on the manufacturer grid (~13,400), so the earlier crosses confirmed Ford's
+first model (the Model T). The schedule now enters the highlighted maker at 14,400, moves off the first model at 14,800 and
+confirms at 15,200; the frame at VBlank 21,000 shows position 2, lap 1/2, 0'23.650, 63 mph on a wet Tsukuba.
+
+**3x baselines (Spec II target build, trace tooling, mean over the window):**
+
+| scene (`GT4_BENCH_SCENE`) | window | wall | GS worker | GPU busy | EE critical | frame p50 |
+|---|---|---|---|---|---|---|
+| Opera Paris (`opera-paris`) | 20,000-21,600 | 8.377 | 8.133 | 1.727 | 4.888 | 5.153 |
+| S.S. Route 5 (`ssr5-night`) | 20,000-21,600 | 8.490 | 8.193 | 2.613 | 4.794 | 5.108 |
+| Tsukuba Wet (`tsukuba-wet`) | 20,000-21,600 | 8.330 | 8.123 | 2.297 | 5.100 | 5.418 |
+| George V Paris / rally (`george-paris-rally`) | 20,000-21,600 | 11.173 | 10.910 | 3.350 | 5.647 | 6.005 |
+| George V reference replay (`spec2-george`) | 20,400-21,300 | 11.975 | 11.680 | 3.425 | 13.557 | 13.491 |
+
+The first four are **CPU/GS-worker bound** at 3x (GPU busy 1.7-3.4 ms of 16.7), i.e. the same shape as the license and the
+night race: these scenes belong to the streamer's CPU-bound complaint, not to a GPU one. The reference replay's window
+still includes pre-race frames (EE critical 13.56): its race-start VBlank needs refining before it is used as a clean
+reference.
+
 
 ## S4 mapping: the four words are per sprite (not per vertex)
 
