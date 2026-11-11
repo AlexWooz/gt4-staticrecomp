@@ -44,12 +44,32 @@ struct SampledTexture {
   std::uint32_t th = 0;   // TEX0 log2 height
   std::uint32_t tcc = 1;  // TEX0.TCC: texture alpha participates in MODULATE
   std::uint32_t tfx = 0;  // TEX0.TFX: MODULATE is 0 and the only measured function
-  std::uint32_t mxl = 0;  // TEX1.MXL: level 0 only, so this must be 0
+  std::uint32_t mxl = 0;  // TEX1.MXL: the record's maximum mip level (0..6)
   // TASK-090 track M1: the record's TEX1.MXL was above 0 and the world table decoded level 0 as a declared fallback. The
   // sampler still samples level 0 (mxl is stored as 0); the flag lets the report count the fallback.
   bool level0_mip_fallback = false;
+  // TASK-090 texture mip: the decoded levels 1..MXL (empty when the record has none or a level was not covered). Level 0
+  // is `rgba` above. `mip_ready` is true only for a complete chain; the sampler then selects levels from the explicit LOD
+  // the table computed and `mxl` keeps the record's value.
+  struct MipLevel {
+    std::uint32_t level = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<std::uint8_t> rgba;  // width * height * 4, top row first
+  };
+  std::vector<MipLevel> mip_levels;
+  bool mip_ready = false;
+  std::uint64_t miptbp1 = 0;  // the chain registers the levels were decoded from (tap, else the item record)
+  std::uint64_t miptbp2 = 0;
+  bool miptbp_from_state = false;
+  // TEX1 fields the explicit LOD formula reads (chapter 01.5): LCM, L and K in 1/16 units. The table computes the
+  // per-vertex LOD from these and the tapped Q; the sampler only uses them for a level-0 fallback report.
+  std::uint32_t lcm = 0;
+  std::uint32_t lod_l = 0;
+  std::int32_t lod_k_raw = 0;
   std::uint32_t mmag = 0; // TEX1.MMAG: 0 nearest, 1 linear
-  std::uint32_t mmin = 0; // TEX1.MMIN: 0 nearest, 1 linear
+  std::uint32_t mmin = 0; // TEX1.MMIN: 0 nearest, 1 linear, 2..5 the mip filters
+  std::uint32_t tbp0 = 0; // TEX0.TBP0: the texture page, for the per-page census
   std::uint32_t wms = 0;  // CLAMP.WMS/WMT: 0 repeat, 1 clamp, 2 region clamp, 3 region repeat
   std::uint32_t wmt = 0;
   std::uint32_t minu = 0, maxu = 0, minv = 0, maxv = 0;
@@ -128,6 +148,13 @@ struct TextureBinding {
   // carried, one byte per item vertex in mesh order; empty means the record carried no fog (a counted fallback).
   bool reflection = false;
   std::vector<std::uint8_t> vertex_fog;
+  // TASK-090 texture mip: the tapped STQ Q of each item vertex, in mesh order (empty when the item has no tapped record).
+  // The table turns it into the explicit per-vertex LOD below; a mip texture without it keeps the level-0 fallback.
+  std::vector<float> vertex_q;
+  // The explicit per-vertex LOD (chapter 03.6: min(K/16 - log2|Q|*2^L, max level) - base level) and the item's base level.
+  // The rasteriser interpolates the explicit LOD linearly, as the GPU sampler the reference (CoreGS 2.0) uses does.
+  std::vector<float> vertex_lod;
+  std::uint32_t mip_base_level = 0;
 };
 
 // The frame's per-item bindings, one inner vector per captured draw (sized to item_count) keyed by the draw's sequence,
@@ -167,9 +194,22 @@ enum class SampleStatus : std::uint32_t {
 const char *sample_status_name(SampleStatus status) noexcept;
 
 // Samples one fragment. `vertex` is the lit/vertex colour at the pixel (8-bit per channel), `out` the MODULATE
-// result. Returns ok and writes `out`, or a refusal status and leaves `out` untouched.
+// result. Returns ok and writes `out`, or a refusal status and leaves `out` untouched. `texel_out`, when not null,
+// receives the palette-applied, filtered texel before MODULATE (the texture-mip census reads it).
 SampleStatus sample_texture(const SampledTexture &texture, float u, float v,
-                            const std::array<std::uint8_t, 4> &vertex, std::array<std::uint8_t, 4> &out) noexcept;
+                            const std::array<std::uint8_t, 4> &vertex, std::array<std::uint8_t, 4> &out,
+                            std::array<std::uint8_t, 4> *texel_out = nullptr) noexcept;
+
+// TASK-090 texture mip: samples one fragment with the full mip chain. `lod` is the explicit shader LOD relative to the
+// item's base level (chapter 03.6); `base_level` is that level. LOD <= 0 uses the magnification filter at level 0;
+// LOD > 0 selects the level `base_level + LOD` clamped to [0, MXL] and applies MMIN (2 nearest, 3 nearest/trilinear,
+// 4 linear, 5 linear/trilinear). A texture without a complete chain (`mip_ready` false) is sampled by the level-0
+// subset; the caller counts that fallback. `texel_out` receives the palette-applied, filtered texel before MODULATE and
+// `level_out` the integer level (for the per-page texel census).
+SampleStatus sample_texture_lod(const SampledTexture &texture, float u, float v, float lod, std::uint32_t base_level,
+                                const std::array<std::uint8_t, 4> &vertex, std::array<std::uint8_t, 4> &out,
+                                std::array<std::uint8_t, 4> *texel_out = nullptr,
+                                std::uint32_t *level_out = nullptr) noexcept;
 
 // The texel coordinate of a normalised u/v, in the GS 10.4 fixed point: floor(uv * 2^log2_size * 16), saturated to
 // +/-1e9 so the integer wrap below stays defined (the same conversion as ToTexel104 in coregs3/cpuref).

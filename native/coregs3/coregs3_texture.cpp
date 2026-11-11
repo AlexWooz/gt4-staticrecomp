@@ -11,6 +11,7 @@
 
 #include "coregs3_vram.hpp"
 #include "hw_clut.hpp"
+#include "hw_gs_lod.hpp"
 #include "hw_gs_registers.hpp"
 #include "hw_gs_replace/names.hpp"
 
@@ -183,15 +184,22 @@ TextureStatus decode_record_fields(const SlmImage &slm, const TextureRecord &rec
                   static_cast<unsigned>(record.tw), static_cast<unsigned>(record.th));
     return refuse(out, error, TextureStatus::refused_size, detail);
   }
-  if (record.mxl != 0u) {
-    if (!options.level0_mip_fallback) {
+  const bool wants_mips = record.mxl != 0u;
+  if (wants_mips) {
+    if (record.mxl > 6u) {
       char detail[96];
-      std::snprintf(detail, sizeof detail, "TEX1.MXL %u: mip levels are not decoded",
-                    static_cast<unsigned>(record.mxl));
+      std::snprintf(detail, sizeof detail, "TEX1.MXL %u is above the 6-level MIPTBP chain", static_cast<unsigned>(record.mxl));
       return refuse(out, error, TextureStatus::refused_state, detail);
     }
-    // The world pass's declared fallback: decode level 0 (the base rectangle) and record that the record asked for mips.
-    out.level0_mip_fallback = true;
+    if (!options.decode_mip_levels && !options.level0_mip_fallback) {
+      char detail[96];
+      std::snprintf(detail, sizeof detail, "TEX1.MXL %u: mip levels are not decoded", static_cast<unsigned>(record.mxl));
+      return refuse(out, error, TextureStatus::refused_state, detail);
+    }
+    // The world pass's declared fallback (decode_mip_levels off): decode level 0 (the base rectangle) and record that the
+    // record asked for mips. With decode_mip_levels on, the levels are decoded below; a level the image does not cover
+    // turns the whole chain off and sets the same counted flag.
+    if (!options.decode_mip_levels) out.level0_mip_fallback = true;
   }
 
   const bool indexed = is_indexed(record.psm);
@@ -347,6 +355,51 @@ TextureStatus decode_record_fields(const SlmImage &slm, const TextureRecord &rec
           !palette.empty() ? palette[stored & (static_cast<std::uint32_t>(palette.size()) - 1u)]
                            : hw_gs_replace::ExpandDirectTexel(desc.psm, stored, desc.texa);
       std::memcpy(out.rgba.data() + (static_cast<std::size_t>(y) * out.width + x) * 4u, &word, 4u);
+    }
+  }
+
+  // TASK-090 texture mip: levels 1..MXL at the MIPTBP1/MIPTBP2 addresses, each with the same palette. A level whose
+  // page run the image does not cover is counted and the whole chain is dropped, so the sampler never mixes a decoded
+  // level 1 with a missing level 2; the caller then keeps the explicit level-0 fallback.
+  if (wants_mips && options.decode_mip_levels) {
+    out.miptbp1 = record.miptbp1;
+    out.miptbp2 = record.miptbp2;
+    std::vector<DecodedTexture::MipLevel> levels;
+    std::uint32_t missing = 0;
+    for (std::uint32_t level = 1; level <= record.mxl; ++level) {
+      const hwgs::lod::MipLevelAddress address =
+          hwgs::lod::mip_level_address(level, record.tbp0, record.tbw, record.miptbp1, record.miptbp2);
+      const hwgs::lod::MipSize size = hwgs::lod::mip_level_size(record.tw, record.th, level);
+      TextureRecord level_record = record;
+      level_record.tbp0 = address.tbp;
+      level_record.tbw = address.tbw;
+      std::string coverage_error;
+      if (size.width == 0 || size.height == 0 ||
+          !texture_blocks_covered(slm, level_record, 0u, 0u, size.width, size.height, coverage_error)) {
+        missing += 1;
+        continue;
+      }
+      DecodedTexture::MipLevel mip;
+      mip.level = level;
+      mip.width = size.width;
+      mip.height = size.height;
+      mip.rgba.resize(static_cast<std::size_t>(size.width) * size.height * 4u);
+      for (std::uint32_t y = 0; y < size.height; ++y) {
+        for (std::uint32_t x = 0; x < size.width; ++x) {
+          const std::uint32_t stored = source.ReadPixel(desc.psm, address.tbp, address.tbw, x, y);
+          const std::uint32_t word =
+              !palette.empty() ? palette[stored & (static_cast<std::uint32_t>(palette.size()) - 1u)]
+                               : hw_gs_replace::ExpandDirectTexel(desc.psm, stored, desc.texa);
+          std::memcpy(mip.rgba.data() + (static_cast<std::size_t>(y) * size.width + x) * 4u, &word, 4u);
+        }
+      }
+      levels.push_back(std::move(mip));
+    }
+    if (missing == 0u) {
+      out.mip_levels = std::move(levels);
+    } else {
+      out.mip_levels_missing = missing;
+      out.level0_mip_fallback = true;
     }
   }
 
@@ -556,6 +609,20 @@ TextureStatus decode_texture_state(const SlmImage &slm, const TextureState &stat
   record.maxu = hwgs::clampreg::Maxu(record.clamp);
   record.minv = hwgs::clampreg::Minv(record.clamp);
   record.maxv = hwgs::clampreg::Maxv(record.clamp);
+  // TASK-090 texture mip: the tapped MIPTBP words when the VU1 stream wrote them; otherwise the caller's record words.
+  // The source is reported so the report can say whether the chain addresses are measured at the draw or inherited.
+  if (state.miptbp1_known) {
+    record.miptbp1 = state.miptbp1;
+    out.miptbp_from_state = true;
+  } else if (options.mip_registers_known) {
+    record.miptbp1 = options.mip_bp1;
+  }
+  if (state.miptbp2_known) {
+    record.miptbp2 = state.miptbp2;
+    out.miptbp_from_state = out.miptbp_from_state || state.miptbp1_known;
+  } else if (options.mip_registers_known) {
+    record.miptbp2 = options.mip_bp2;
+  }
   return decode_record_fields(slm, record, options, &state, out, error);
 }
 

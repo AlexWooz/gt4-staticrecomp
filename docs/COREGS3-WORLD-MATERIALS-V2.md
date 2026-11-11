@@ -32,6 +32,52 @@ branch at `0a9a7e38`; method in [COREGS3-HOOKS](COREGS3-HOOKS.md) §29):
 
 The original study text follows unchanged; the "Fix list" entries 1 and 2 are marked done below.
 
+## Status (2026-11-10, branch `task/090-texture-mip`): fixes 3 and 4 measured; the palette is not the gain, the GS STQ interpolation is the content fix, and the road's mip chain is not captured
+
+This round implements the two remaining fixes (worktree `O:/Antigavity/gt4-wt-090-texture-mip`, based on
+`task/090-coregs3` at `5b82c832`) with a per-pixel material dump (`gt4_coregs3_render --sample-dump`) and a census
+script (`scripts/coregs3_bench/gs_texture_census.py`) that inverts the captured chain (FIX 127, FIX 255, the CT16
+present with `DIMX 0x0001044501100554`) on the reference and undoes the per-pixel MODULATE and fog with the values the
+renderer recorded.
+
+**Fix 3, palette/texel: DONE as a measurement (C); the palette is not the 1.43x.** With the chain inverted, the
+reference implies a whole-mask texel ratio of **1.019** and a road texel ratio of **0.917** against the decoded page
+(the study gate 1.0 +/- 0.1: met), and a per-page world ratio median of 0.912. The road's palette is the CSM1 group 0
+at CBP 0x368F (CSA 0, TEX2 T8 load, CT32 entries) and its 18.7..67.2 luma ramp reproduces the reference-implied texel
+level; the study's 1.43x was the captured post gain already measured in `task/090-post-chain`, not a palette
+difference. The **palette-vs-content split** then located the content defect: the GS interpolates S, T and Q linearly in
+screen space and divides (chapter 01.5), and the tapped Q is **not** the 1/w weight — `|Q*w|` varies by up to **92.4x**
+inside a triangle (23,576 triangles measured) — so the renderer's perspective-correct UV form sampled different texels
+than the GS. The GS STQ form raises the road page's correlation **0.111 -> 0.175**, its fit **0.2857*w + 19.264 ->
+0.5778*w + 14.696**, and its chain PSNR 25.03 -> **25.90**; the chain whole-mask metrics go PSNR 20.78 -> **20.95**,
+pct_bad 27.7 -> **27.0%**, mean |diff| 13.47 -> **12.95** (luma 29.85 -> 29.27 against the raw reference 26.69). The
+per-page corrected **spread gate (+/-0.1) is still not met**: excluding the two known content outliers (0x3BF6 0.523,
+0x38FF 1.126) the per-page world ratios run 0.646..1.126 around a 0.912 median, and the low pages 0x3721 0.646, 0x37B5
+0.652 and 0x3E47 0.687 have high pattern correlation (0.64/0.74/0.17), i.e. a per-material **level** difference remains.
+
+**Fix 4, mip path: IMPLEMENTED and MEASURED (C); the gate is not met because the capture does not carry the chain.**
+The renderer now decodes levels 1..MXL from the tapped MIPTBP1/MIPTBP2 (the tap writes them: 1,268 states), samples at
+the GS explicit LOD `K/16 - log2|Q|*2^L` (the road's TEX1 L=2, K=-165; LOD -12.35..23.21 over 1,260 vertices, tapped Q
+-1.42..0.209) with the MMIN 2..5 nearest/linear/trilinear filters, and counts everything. The A/B (`--mip`): 99.5% of
+the road's 1.24M fragments select level 1, but the captured level-1 address (MIPTBP1 TBP **0x3662**, TBW 2) holds
+**another texture's page** at the job: its decoded page is the car/palette atlas (`bound_*_mip1_64x64.png`, the
+`444177ea5162` vs `a1f93962767c` contents of the neighbouring job records), and the frame-end default is a later upload.
+The reference (CoreGS 2.0, `GT4_HW_MIPMAP=full`) does not show it. `--mip` therefore lowers the road's high-pass
+correlation **0.100 -> 0.078** and moves the page ratio **1.489 -> 1.620** (outside the +/-0.05 gate), so the mip path
+is **off by default**. The capture side is fixed for the next run: `coregs3_texwin.hpp` gained
+`texture_mip_windows`/`texture_windows_from_state` (levels 1..MXL from MIPTBP1/2 or the MTBA layout, asserted equal to
+`hw_gs_lod` in `native_coregs3_sampler`) and both capture channels add them to the per-job window, so a fresh
+`.gt4vram` carries the chain the sampler asks for.
+
+**Gates (all verifiable in `build/evidence-texture-mip/`).** `--no-mip` restores the pre-round sampling model byte for
+byte (world PNG `34BDEE072EFAA2CFA7C3198D0742A877234C4915F5D4AAB76EA4BFDF773C4E28`, chain PNG
+`BFA47B6739B8AF007CB728A65DC1C4EE7CDAAED02F685EBCD87ED8FE2C86BDF3`); the car-only render is byte-identical to the
+`c8d2500a` executable (PNG `B0E7082B9D0FEB52DA00B54D5B634D4518795B94706522ABD0498E5EB338F16E`, report
+`63FADB3484240F4D5BE7479F8C13E701D0D2C74F47ACC9E99C68C6C428A80CE2`); the 3x off/shadow gate prints
+`COREGS3-NIGHT-CHECK-OK` (8,997 VBlanks, 1,686 racing, 0 clock/digest/state differences, 13/13 frames); CTest coregs3
+18/18 and Python 17/17 with the new mip and census controls. The study's headline gates (PSNR >= 24 dB, SSIM >= 0.75,
+pct_bad <= 10%) are still not met: the chain picture is PSNR 20.95, SSIM 0.590, pct_bad 27.0%.
+
 ## Question
 
 The offline world render is darker than the CoreGS 2.0 reference frame. Frame 0 (VBlank 7398, 3x, reference
@@ -315,8 +361,19 @@ PATH1/PATH2 interleaving, which the two sidecars do not carry; this is the top o
    (fix the Python triangle/UV reconstruction or add a per-pixel sample dump to the tool), then recover the reference's
    palette per texel index. Gate: the road's effective texel ratio is 1.0 +/- 0.1, the per-page corrected ratio spread
    is <= +/-0.1, and the palette used by the renderer is shown equal to the reference's or the difference is named.
+   **DONE (`task/090-texture-mip`):** the per-pixel sample dump and the chain-inverting census give a whole-mask texel
+   ratio 1.019 and a road ratio **0.917** (gate met); the palette is shown equal at the level (CSM1 group 0, CT32
+   entries, TEX2 load). The content defect was the UV interpolation: the GS interpolates S,T,Q linearly (the tapped Q is
+   not 1/w, `Q*w` spread up to 92.4x), and the GS STQ form raises the road correlation 0.111 -> 0.175 and its chain PSNR
+   25.03 -> 25.90. The per-page +/-0.1 spread gate is **not met** (0.646..1.126, median 0.912; the low pages
+   0x3721/0x37B5/0x3E47 are a named per-material level residual).
 4. **Implement or measure the mip path.** The 20 road items with MXL 1/MMIN 4 are sampled level 0. Gate: the same
    items' high-pass correlation with the reference rises and the page ratio does not move outside +/-0.05.
+   **MEASURED, gate not met (`task/090-texture-mip`):** the path is implemented (tapped MIPTBP1/2, decoded levels, GS
+   explicit LOD, MMIN 2..5 filters) and 99.5% of the road fragments select level 1, but the captured level-1 address
+   (0x3662) holds another texture's page at the job, so the correlation falls (0.100 -> 0.078) and the ratio moves to
+   1.620. The path is off by default; the per-job capture window now includes the MIPTBP levels, so the next capture
+   carries the chain.
 5. **Keep the verified input path as the control.** The page index identity (1.000), the vertex-colour identity and
    the blend arithmetic are already covered by the pass-textures/morph fixtures; add the road page's index-identity
    check as a regression.

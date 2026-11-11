@@ -2085,10 +2085,35 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   frames). Evidence: `build/evidence-hud-font/`. Open: the font file's glyph bitmap payload decode; the gear ladder,
   total time and clock (the gear page 0x3C80 is uploaded but sampled by no draw in this frame).
 
-- Next: the live world present (in progress); the material transfer-curve residual (fixes 3/4: palette/texel
-  inversion and the MXL 1/MMIN 4 mip path); the remaining HUD elements (gear ladder, total time, clock) whose
-  pages are not sampled in the captured frame; VRR presentation and the HUD at the variable rate; the
-  effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
+- **World texture transfer/mip fixes (2026-11-10, branch `task/090-texture-mip`):** the world-materials-v2 fixes 3
+  and 4. (a) **Palette/texel:** with the captured post chain (FIX 127, FIX 255, the CT16 present with
+  `DIMX 0x0001044501100554`) inverted from the reference through the renderer's own per-pixel sample dump
+  (`--sample-dump`, 24 B/px), the whole-mask texel ratio is **1.019** and the road's **0.917** (the study's 1.0 +/-
+  0.1 gate met); the CLUT group selection (CBP 0x368F, CSA 0, TEX2 T8 load, CSM1 CT32) and the 8-bit CT32 entries
+  reproduce the reference-implied texel level, so the study's 1.43x was the post chain, not the palette. (b) The
+  palette-vs-content split found the content defect: the GS interpolates S, T and Q linearly in screen space and
+  divides (chapter 01.5), and the tapped Q is **not** the 1/w weight (measured `Q*w` spread 1.0000..92.36 over 23,576
+  triangles), so the perspective-correct UV form sampled different texels. The GS STQ coordinate
+  (`stq_texture_coordinate`) raised the road correlation **0.111 -> 0.175**, its fit slope **0.2857 -> 0.5778**, its
+  PSNR 25.17 -> **25.23** (world) and 25.03 -> **25.90** (chain), and the chain whole-mask PSNR 20.78 -> **20.95**,
+  pct_bad 27.7 -> **27.0%**, mean |diff| 13.47 -> **12.95**. (c) The mip path is implemented and measured (tapped
+  MIPTBP1/2, levels 1..MXL decoded from the image, the GS explicit LOD `K/16 - log2|Q|*2^L`, MMIN 2..5
+  nearest/linear/trilinear): 25 items (20 road, 5 reflection) carry an explicit LOD (LOD -12.35..23.21 over 1,260
+  vertices, Q -1.42..0.209) and 1.24M road fragments select level 1, but the captured level-1 address (MIPTBP1 TBP
+  0x3662, TBW 2) holds **another texture's page** at the job (the car/palette atlas), so `--mip` lowers the road's
+  high-pass correlation 0.100 -> 0.078 and moves the page ratio 1.489 -> 1.620 (outside the +/-0.05 gate). The path is
+  off by default; the capture-side window rule now includes levels 1..MXL (`texture_mip_windows`, MTBA too), so the
+  next `.gt4vram` carries the chain. Gates: no-mip world and chain renders **byte-identical** to the pre-round tool
+  (`34BDEE07...` / `BFA47B67...`), car-only render byte-identical (`B0E7082B...`, report `63FADB34...`), 3x
+  off/shadow **COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13), CTest coregs3 **18/18**
+  (new mip cases in `native_coregs3_sampler` and `native_coregs3_texture_state`), Python **17/17** (new census
+  controls). The per-page spread is still outside the study's +/-0.1 (world ratios 0.646..1.126 excluding the known
+  content outliers, median 0.912), named per page in WORLD-MATERIALS-V2. Evidence `build/evidence-texture-mip/`.
+
+- Next: the live world present (in progress); a recapture with the mip windows so the road's level-1 chain is
+  carried, and the per-material level spread (pages 0x3721/0x37B5/0x3E47); the remaining HUD elements (gear
+  ladder, total time, clock) whose pages are not sampled in the captured frame; VRR presentation and the HUD at
+  the variable rate; the effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
 
 
 ### TASK-087 — GS readbacks without stalls

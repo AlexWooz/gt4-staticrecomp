@@ -31,6 +31,14 @@ struct ClipVertex {
   float rs = 0, rt = 0;
   float fog = 255.0f;
   bool has_fog = false;
+  // TASK-090 texture mip: the explicit shader LOD of this vertex (chapter 03.6), interpolated linearly like the GPU
+  // sampler the reference uses. A vertex without a tapped Q keeps `has_lod` false and the sampler its level-0 fallback.
+  float lod = 0.0f;
+  bool has_lod = false;
+  // TASK-090 texture mip: the tapped STQ Q. The GS interpolates S, T and Q linearly in screen space and divides, so the
+  // UV is lerp(u*Q)/lerp(Q), not the 1/w perspective-correct form unless Q is the 1/w weight (measured: it is not).
+  float q = 1.0f;
+  bool has_q = false;
   bool has_reflection = false;
   bool valid = false;
 };
@@ -189,13 +197,61 @@ void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVert
                                            clamp_level(vertex_alpha)};
       bool textured = false;
       bool depth_masked = false;
+      // TASK-090 texture-mip: the material record of this fragment (filled when a texture sampled it) and the writer the
+      // tool's --sample-dump reads at each colour write.
+      std::array<std::uint8_t, 4> sample_vertex = fragment;
+      std::array<std::uint8_t, 4> sample_texel{};
+      std::uint32_t sample_level = 0;
+      std::uint8_t sample_flags = 0;
+      std::uint8_t sample_fog = 255;
+      std::uint32_t sample_fog_colour = 0;
+      const auto record_sample = [&](std::size_t pixel_index) {
+        if (options.sample_dump == nullptr || (sample_flags & 1u) == 0 || binding == nullptr) return;
+        if (pixel_index >= options.sample_dump->pixels.size()) return;
+        TextureSampleDump::Pixel &record = options.sample_dump->pixels[pixel_index];
+        record.flags = sample_flags;
+        record.level = static_cast<std::uint8_t>(sample_level);
+        std::memcpy(record.texel, sample_texel.data(), 4u);
+        std::memcpy(record.vertex, sample_vertex.data(), 4u);
+        std::memcpy(record.fragment, fragment.data(), 4u);
+        record.fog = sample_fog;
+        record.fog_colour[0] = static_cast<std::uint8_t>(sample_fog_colour & 0xFFu);
+        record.fog_colour[1] = static_cast<std::uint8_t>((sample_fog_colour >> 8) & 0xFFu);
+        record.fog_colour[2] = static_cast<std::uint8_t>((sample_fog_colour >> 16) & 0xFFu);
+        record.page = static_cast<std::uint16_t>(binding->texture->tbp0);
+      };
       if (can_sample) {
         const SampleState &state = binding->state;
-        // The model UV interpolates with 1/w like the view depth; the VU1's constant Q cancels in S/Q.
-        const float u = (alpha * a.u / a.w + beta * b.u / b.w + gamma * c.u / c.w) / inv_w;
-        const float v = (alpha * a.v / a.w + beta * b.v / b.w + gamma * c.v / c.w) / inv_w;
+        // The GS interpolates S, T and Q linearly in screen space and divides (chapter 01.5). The tapped Q is not the
+        // 1/w weight the old form assumed: the measured Q*w spread inside a triangle reaches 92x, so the
+        // perspective-correct form samples different texels than the reference. The world path uses the GS's own
+        // arithmetic; paths without a tapped Q (the car pass) keep the perspective-correct form byte for byte.
+        float u = (alpha * a.u / a.w + beta * b.u / b.w + gamma * c.u / c.w) / inv_w;
+        float v = (alpha * a.v / a.w + beta * b.v / b.w + gamma * c.v / c.w) / inv_w;
+        if (world && !options.world_no_mip && a.has_q && b.has_q && c.has_q) {
+          const float q[3] = {a.q, b.q, c.q};
+          const float uu[3] = {a.u, b.u, c.u};
+          const float vv[3] = {a.v, b.v, c.v};
+          stq_texture_coordinate(alpha, beta, gamma, q, uu, vv, u, v);
+        }
         std::array<std::uint8_t, 4> sampled;
-        if (sample_texture(*binding->texture, u, v, fragment, sampled) != SampleStatus::ok) {
+        // TASK-090 texture mip: a complete chain with a tapped LOD samples through the explicit-LOD path; anything else
+        // keeps the level-0 subset and is counted.
+        const bool mip = binding->texture->mip_ready && a.has_lod && b.has_lod && c.has_lod;
+        const float lod = mip ? alpha * a.lod + beta * b.lod + gamma * c.lod : 0.0f;
+        const SampleStatus sample_status =
+            mip ? sample_texture_lod(*binding->texture, u, v, lod, binding->mip_base_level, fragment, sampled,
+                                     &sample_texel, &sample_level)
+                : sample_texture(*binding->texture, u, v, fragment, sampled, &sample_texel);
+        if (mip) {
+          sample_flags |= 4u;
+          stats.world_mip_pixels += 1;
+          stats.world_mip_levels[std::min<std::uint32_t>(sample_level, 7u)] += 1;
+          stats.world_mip_base_levels[std::min<std::uint32_t>(binding->mip_base_level, 7u)] += 1;
+        } else if (binding->texture->mip_ready) {
+          stats.world_mip_missing_lod += 1;
+        }
+        if (sample_status != SampleStatus::ok) {
           // A per-pixel refusal (a wrapped texel outside the decoded rectangle): keep the lit colour and count it. The
           // static state was validated before rasterising, so nothing else can reach this branch.
           stats.sample_refused_pixels += 1;
@@ -203,6 +259,7 @@ void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVert
         } else {
           fragment = sampled;
           textured = true;
+          sample_flags |= 1u;
           stats.textured_pixels += 1;
           // The world path (TASK-090 track M1) applies the tapped per-vertex fog toward FOGCOL before the alpha test,
           // exactly the GS pixel order the reflection pass uses. The sky pass's measured state has no fog and is
@@ -213,6 +270,9 @@ void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVert
               const std::uint32_t fog_level =
                   fog <= 0.0f ? 0u : fog >= 255.0f ? 255u : static_cast<std::uint32_t>(fog + 0.5f);
               fragment = apply_vertex_fog(fragment, fog_level, state.fog_colour);
+              sample_flags |= 2u;
+              sample_fog = static_cast<std::uint8_t>(fog_level);
+              sample_fog_colour = state.fog_colour;
               stats.world_fog_pixels += 1;
             } else {
               stats.world_fog_missing += 1;
@@ -240,6 +300,7 @@ void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVert
                 if (afail == 3) fragment[3] = rgba[pixel * 4 + 3];
                 for (std::uint32_t lane = 0; lane < 4; ++lane) rgba[pixel * 4 + lane] = fragment[lane];
                 mask[pixel] = 1;
+                record_sample(pixel);
                 stats.world_afail_written += 1;
                 drew = true;
                 continue;
@@ -318,6 +379,7 @@ void rasterise_triangle(const ClipVertex &a, const ClipVertex &b, const ClipVert
         rgba[pixel * 4 + 3] = 255;
       } else {
         for (std::uint32_t lane = 0; lane < 4; ++lane) rgba[pixel * 4 + lane] = fragment[lane];
+        record_sample(pixel);
       }
       mask[pixel] = 1;
       if (wet_reflection) {
@@ -539,6 +601,10 @@ struct ClipVertexIn {
   float rs = 0, rt = 0;  // reflection texgen S,T (perspective attribute, interpolated like the model UV)
   float fog = 255.0f;    // reflection/world vertex fog (linear, like the Gouraud colours)
   bool has_fog = false;
+  float lod = 0.0f;      // TASK-090 texture mip: the explicit shader LOD (linear, like the Gouraud colours)
+  bool has_lod = false;
+  float q = 1.0f;        // TASK-090 texture mip: the tapped STQ Q (linear, the GS's own STQ interpolation)
+  bool has_q = false;
   bool has_reflection = false;
 };
 
@@ -572,6 +638,10 @@ std::size_t clip_near_plane(const ClipVertexIn in[3], ClipVertexIn out[4]) noexc
       cut.rt = current.rt + (next.rt - current.rt) * t;
       cut.fog = current.fog + (next.fog - current.fog) * t;
       cut.has_fog = current.has_fog && next.has_fog;
+      cut.lod = current.lod + (next.lod - current.lod) * t;
+      cut.has_lod = current.has_lod && next.has_lod;
+      cut.q = current.q + (next.q - current.q) * t;
+      cut.has_q = current.has_q && next.has_q;
       cut.has_reflection = current.has_reflection && next.has_reflection;
       out[count++] = cut;
     }
@@ -709,15 +779,31 @@ void rasterise_clip_space(const Mesh &mesh, const CapturedDraw &draw, const Draw
   // tapped record emits one fog byte per vertex in the same order as the mesh's vertex list).
   std::vector<float> world_fog(mesh.vertices.size(), 255.0f);
   std::vector<std::uint8_t> world_fog_known(mesh.vertices.size(), 0);
+  // TASK-090 texture mip: the explicit per-vertex LOD the table computed (empty for every non-mip binding).
+  std::vector<float> world_lod(mesh.vertices.size(), 0.0f);
+  std::vector<std::uint8_t> world_lod_known(mesh.vertices.size(), 0);
+  // TASK-090 texture mip diagnostic: the tapped STQ Q, to check Q * clip.w is constant across a triangle.
+  std::vector<float> world_q(mesh.vertices.size(), 0.0f);
+  std::vector<std::uint8_t> world_q_known(mesh.vertices.size(), 0);
   if (options.world_pass && bindings != nullptr) {
     for (std::size_t index = 0; index < mesh.vertices.size(); ++index) {
       const std::uint32_t item = mesh.vertices[index].item;
       if (item >= bindings->size() || item >= first_vertex.size()) continue;
-      const std::vector<std::uint8_t> &fog = (*bindings)[item].vertex_fog;
       const std::uint32_t local = static_cast<std::uint32_t>(index) - first_vertex[item];
+      const std::vector<std::uint8_t> &fog = (*bindings)[item].vertex_fog;
       if (local < fog.size()) {
         world_fog[index] = static_cast<float>(fog[local]);
         world_fog_known[index] = 1;
+      }
+      const std::vector<float> &lod = (*bindings)[item].vertex_lod;
+      if (local < lod.size()) {
+        world_lod[index] = lod[local];
+        world_lod_known[index] = 1;
+      }
+      const std::vector<float> &q = (*bindings)[item].vertex_q;
+      if (local < q.size()) {
+        world_q[index] = q[local];
+        world_q_known[index] = 1;
       }
     }
   }
@@ -822,6 +908,32 @@ void rasterise_clip_space(const Mesh &mesh, const CapturedDraw &draw, const Draw
       input[1].has_fog = world_fog_known[ib] != 0;
       input[2].fog = world_fog[ic];
       input[2].has_fog = world_fog_known[ic] != 0;
+      input[0].lod = world_lod[ia];
+      input[0].has_lod = world_lod_known[ia] != 0;
+      input[1].lod = world_lod[ib];
+      input[1].has_lod = world_lod_known[ib] != 0;
+      input[2].lod = world_lod[ic];
+      input[2].has_lod = world_lod_known[ic] != 0;
+      input[0].q = world_q[ia];
+      input[0].has_q = world_q_known[ia] != 0;
+      input[1].q = world_q[ib];
+      input[1].has_q = world_q_known[ib] != 0;
+      input[2].q = world_q[ic];
+      input[2].has_q = world_q_known[ic] != 0;
+      // The UV interpolation assumes Q = k / w. Measure it: |Q * w| must be constant across the triangle.
+      if (world_q_known[ia] != 0 && world_q_known[ib] != 0 && world_q_known[ic] != 0) {
+        const double qa = std::fabs(static_cast<double>(world_q[ia]) * pa.clip.w);
+        const double qb = std::fabs(static_cast<double>(world_q[ib]) * pb.clip.w);
+        const double qc = std::fabs(static_cast<double>(world_q[ic]) * pc.clip.w);
+        const double low = std::min({qa, qb, qc});
+        const double high = std::max({qa, qb, qc});
+        if (low > 1.0e-30 && high < 1.0e30) {
+          stats.world_qw_triangles += 1;
+          const double ratio = high / low;
+          stats.world_qw_ratio_min = std::min(stats.world_qw_ratio_min, ratio);
+          stats.world_qw_ratio_max = std::max(stats.world_qw_ratio_max, ratio);
+        }
+      }
     }
     ClipVertexIn polygon[4];
     const std::size_t count = clip_near_plane(input, polygon);
@@ -852,6 +964,10 @@ void rasterise_clip_space(const Mesh &mesh, const CapturedDraw &draw, const Draw
       screen[corner].rt = polygon[corner].rt;
       screen[corner].fog = polygon[corner].fog;
       screen[corner].has_fog = polygon[corner].has_fog;
+      screen[corner].lod = polygon[corner].lod;
+      screen[corner].has_lod = polygon[corner].has_lod;
+      screen[corner].q = polygon[corner].q;
+      screen[corner].has_q = polygon[corner].has_q;
       screen[corner].has_reflection = polygon[corner].has_reflection;
       screen[corner].valid = true;
     }

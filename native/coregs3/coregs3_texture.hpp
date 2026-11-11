@@ -129,6 +129,20 @@ struct DecodedTexture {
   std::string detail;  // the refusal reason in words, or the decoded state for a success
 
   TextureRecord record;
+  // TASK-090 texture mip: levels 1..TEX1.MXL decoded from the MIPTBP1/MIPTBP2 addresses, in level order. Level 0 is the
+  // base rectangle above. Empty when the record does not ask for mips or when a level could not be decoded; the latter
+  // sets mip_levels_missing so the caller can fall back to level 0 explicitly instead of sampling a half chain.
+  struct MipLevel {
+    std::uint32_t level = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<std::uint8_t> rgba;  // RGBA8, row-major, top row first
+  };
+  std::vector<MipLevel> mip_levels;
+  std::uint32_t mip_levels_missing = 0;  // levels 1..MXL the image did not cover completely
+  std::uint64_t miptbp1 = 0;             // the words the chain was decoded from (tap, else the record)
+  std::uint64_t miptbp2 = 0;
+  bool miptbp_from_state = false;
   // TASK-090 track M1: TEX1.MXL was above 0 and the caller allowed the level-0 fallback (the world pass). The bytes are
   // level 0 only; the flag is evidence for the report, never a silent substitution.
   bool level0_mip_fallback = false;
@@ -163,10 +177,17 @@ struct TextureState {
   std::uint64_t tex1 = 0;
   std::uint64_t clamp = 0;
   std::uint64_t tex2 = 0;
+  // TASK-090 texture mip: the two mip base-pointer registers in force at the item's first vertex. The world stream does
+  // not have to rewrite them per draw (they belong to the texture set), so they are optional: the caller falls back to
+  // the item's 40-byte PGLUtexture record when the tap never saw a write, and counts which source it used.
+  std::uint64_t miptbp1 = 0;
+  std::uint64_t miptbp2 = 0;
   bool tex0_known = false;
   bool tex1_known = false;
   bool clamp_known = false;
   bool tex2_known = false;
+  bool miptbp1_known = false;
+  bool miptbp2_known = false;
 
   // True when the three sampling registers the decoder needs are present.
   bool sampling_registers_known() const noexcept { return tex0_known && tex1_known && clamp_known; }
@@ -179,11 +200,20 @@ struct TextureState {
 TextureStatus decode_texture(const SlmImage &slm, const std::uint8_t *record_bytes, std::size_t size,
                              DecodedTexture &out, std::string &error);
 
-// The decode options. Only the world pass (TASK-090 track M1) sets `level0_mip_fallback`: a record with TEX1.MXL above
-// zero is decoded at level 0 and the fact is recorded in DecodedTexture::level0_mip_fallback. The default refuses it,
-// exactly as the car pass did.
+// The decode options. Only the world pass (TASK-090 track M1, then the texture-mip round) enables the mip handling: a
+// record with TEX1.MXL above zero is either decoded with its full MIPTBP chain (`decode_mip_levels`) or at level 0 with
+// the fact recorded in DecodedTexture::level0_mip_fallback. The default refuses it, exactly as the car pass did.
 struct TextureDecodeOptions {
   bool level0_mip_fallback = false;
+  // TASK-090 texture mip: decode levels 1..MXL from MIPTBP1/MIPTBP2. A level the image does not cover drops the whole
+  // chain and sets level0_mip_fallback, so a half chain is never sampled.
+  bool decode_mip_levels = false;
+  // The MIPTBP1/MIPTBP2 words to use when the tapped state carries none (the item's 40-byte PGLUtexture record). The
+  // caller sets `mip_registers_known` only when it can name the source; DecodedTexture::miptbp_from_state reports which
+  // source was used.
+  bool mip_registers_known = false;
+  std::uint64_t mip_bp1 = 0;
+  std::uint64_t mip_bp2 = 0;
 };
 TextureStatus decode_texture(const SlmImage &slm, const std::uint8_t *record_bytes, std::size_t size,
                              const TextureDecodeOptions &options, DecodedTexture &out, std::string &error);

@@ -15,6 +15,8 @@
 #include "coregs3_sampler.hpp"
 #include "coregs3_scene.hpp"
 #include "coregs3_shape.hpp"
+#include "coregs3_texwin.hpp"
+#include "hw_gs_lod.hpp"
 
 #include <array>
 #include <cmath>
@@ -471,6 +473,112 @@ void check_render_textured_quad() {
   }
 }
 
+// TASK-090 texture mip: the explicit-LOD sampler and the capture-window rule that makes the chain available.
+void check_mip_sampling_and_windows() {
+  // A 4x1 level 0 (R = 10, 20, 200, 210) and a 2x1 level 1 (R = 100, 240), opaque.
+  std::vector<std::uint8_t> level0(4u * 4u);
+  const std::uint8_t level0_r[4] = {10, 20, 200, 210};
+  for (std::uint32_t x = 0; x < 4; ++x) {
+    level0[x * 4 + 0] = level0_r[x];
+    level0[x * 4 + 3] = 255;
+  }
+  std::vector<std::uint8_t> level1(2u * 4u);
+  level1[0] = 100;
+  level1[3] = 255;
+  level1[4] = 240;
+  level1[7] = 255;
+  SampledTexture texture = make_texture(0x14, 2, 0, 1, 4, 1, 1, 0, 3, 0, 0, level0);
+  texture.mxl = 1;
+  texture.mip_ready = true;
+  SampledTexture::MipLevel mip;
+  mip.level = 1;
+  mip.width = 2;
+  mip.height = 1;
+  mip.rgba = level1;
+  texture.mip_levels.push_back(mip);
+  const std::array<std::uint8_t, 4> vertex{128, 128, 128, 128};
+  std::array<std::uint8_t, 4> out{0, 0, 0, 0};
+  std::uint32_t level = 99;
+  // LOD <= 0 uses the magnification filter at level 0 (u = 0.125 is texel 0's centre).
+  require(sample_texture_lod(texture, 0.125f, 0.0f, -3.0f, 0, vertex, out, nullptr, &level) == SampleStatus::ok &&
+              out[0] == 10 && level == 0,
+          "negative LOD magnifies at level 0");
+  // MMIN 4 (linear mip nearest): LOD 0.6 rounds up to level 1, sampled at u = 0.25 (its texel 0).
+  require(sample_texture_lod(texture, 0.25f, 0.0f, 0.6f, 0, vertex, out, nullptr, &level) == SampleStatus::ok &&
+              out[0] == 100 && level == 1,
+          "MMIN 4 selects the rounded level");
+  // LOD 0.4 rounds to level 0 and stays minearest inside it (bilinear weights on a single tap).
+  require(sample_texture_lod(texture, 0.25f, 0.0f, 0.4f, 0, vertex, out, nullptr, &level) == SampleStatus::ok &&
+              level == 0 && out[0] == 15,
+          "LOD 0.4 stays at level 0 with the linear filter");
+  // MMIN 2 (nearest mip): the same level, nearest inside it.
+  SampledTexture nearest = texture;
+  nearest.mmin = 2;
+  require(sample_texture_lod(nearest, 0.25f, 0.0f, 0.6f, 0, vertex, out, nullptr, &level) == SampleStatus::ok &&
+              out[0] == 100 && level == 1,
+          "MMIN 2 samples the level nearest");
+  // MMIN 5 (linear mip): the two levels blend, so the result is strictly between them.
+  SampledTexture trilinear = texture;
+  trilinear.mmin = 5;
+  std::array<std::uint8_t, 4> low{0, 0, 0, 0}, mixed{0, 0, 0, 0};
+  require(sample_texture_lod(texture, 0.25f, 0.0f, 0.0f, 0, vertex, low) == SampleStatus::ok, "level 0 reference");
+  require(sample_texture_lod(trilinear, 0.25f, 0.0f, 0.5f, 0, vertex, mixed) == SampleStatus::ok, "trilinear sample");
+  require(mixed[0] > low[0] && mixed[0] < 100, "the trilinear sample lies between the two levels");
+  // A mip-ready texture without the chain is the level-0 subset, never a silent level pick. The table's fallback
+  // collapses MMAG/MMIN to the same level-0 filter before this point.
+  SampledTexture broken = texture;
+  broken.mip_ready = false;
+  broken.mip_levels.clear();
+  broken.mxl = 0;
+  broken.mmag = broken.mmin = 0;
+  require(sample_texture_lod(broken, 0.25f, 0.0f, 5.0f, 0, vertex, out) == SampleStatus::ok && out[0] == 20,
+          "a missing chain samples level 0");
+  broken.mmag = 1;
+  broken.mmin = 4;
+  require(sample_texture_lod(broken, 0.25f, 0.0f, 5.0f, 0, vertex, out) == SampleStatus::refused_filter,
+          "an uncollapsed mip filter without a chain is refused");
+
+  // The capture-window rule: TEX0 T4 128x128 TBW 2 at TBP 0x36D0, TEX1 MXL 1, MIPTBP1 level 1 = TBP 0x3662 TBW 2.
+  const std::uint64_t tex0 = 0x36D0ull | (2ull << 14) | (0x14ull << 20) | (7ull << 26) | (7ull << 30) |
+                             (0x368Full << 37);
+  const std::uint64_t tex1 = 1ull << 2;
+  const std::uint64_t miptbp1 = 0x3662ull | (2ull << 14);
+  gt4::coregs3::vram::Window windows[gt4::coregs3::vram::kMaxCaptureWindows] = {};
+  std::uint32_t count = 0;
+  texture_windows_from_state(tex0, tex1, miptbp1, 0, windows, count);
+  bool base = false, palette = false, mip_window = false;
+  for (std::uint32_t index = 0; index < count; ++index) {
+    base = base || (windows[index].first_block == 0x36D0u && windows[index].block_count == 32u);
+    palette = palette || (windows[index].first_block == 0x368Fu && windows[index].block_count == 4u);
+    mip_window = mip_window || (windows[index].first_block == 0x3662u && windows[index].block_count == 32u);
+  }
+  require(base && palette && mip_window, "the state window set carries the base run, the palette and level 1");
+  count = 0;
+  texture_mip_windows(tex0, 0, miptbp1, 0, windows, count);
+  require(count == 0u, "MXL 0 names no level");
+  // MTBA packs levels after level 0; the capture rule must agree with the HWR lod module's vectors.
+  const std::uint64_t mtba_tex1 = (2ull << 2) | (1ull << 9);  // TEX1.MXL 2, MTBA on
+  count = 0;
+  texture_mip_windows(tex0, mtba_tex1, 0, 0, windows, count);
+  const std::array<hwgs::lod::MipLevelAddress, 3> packed = hwgs::lod::mtba_levels(0x36D0u, 7u, 0x14u);
+  require(count == 2u, "MTBA names levels 1 and 2");
+  require(windows[0].first_block == packed[0].tbp && windows[1].first_block == packed[1].tbp,
+          "MTBA addresses agree with hw_gs_lod");
+
+  // The GS STQ coordinate (chapter 01.5): S, T and Q interpolate linearly and the pixel divides. With Q varying, this
+  // differs from the equal-weight mean, which is what the captured road stream needs.
+  const float q[3] = {0.02f, 0.05f, 0.1f};
+  const float uu[3] = {0.0f, 0.5f, 1.0f};
+  const float vv[3] = {0.0f, 0.25f, 1.0f};
+  float gu = 0.0f, gv = 0.0f;
+  require(stq_texture_coordinate(1.0f / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f, q, uu, vv, gu, gv), "stq coordinate");
+  require(std::fabs(gu - 0.7352941f) < 1.0e-5f, "the GS divides the interpolated S by the interpolated Q");
+  require(std::fabs(gu - 0.5f) > 0.2f, "the GS form differs from the equal-weight mean when Q varies");
+  const float zero_q[3] = {0.02f, -0.02f, 1.0f};
+  require(!stq_texture_coordinate(0.5f, 0.5f, 0.0f, zero_q, uu, vv, gu, gv),
+          "a zero interpolated Q is a refusal, not a division");
+}
+
 }  // namespace
 
 int main() {
@@ -479,6 +587,7 @@ int main() {
     check_filtering_and_wrap();
     check_alpha_test_and_blends();
     check_render_textured_quad();
+    check_mip_sampling_and_windows();
   } catch (const std::exception &failure) {
     std::fprintf(stderr, "coregs3 sampler fixture: %s\n", failure.what());
     return 1;

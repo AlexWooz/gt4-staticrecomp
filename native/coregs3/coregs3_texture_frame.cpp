@@ -14,6 +14,7 @@
 #include "coregs3_shape.hpp"
 #include "coregs3_tap.hpp"
 #include "coregs3_vram.hpp"
+#include "hw_gs_lod.hpp"
 #include "hw_gs_registers.hpp"
 
 namespace gt4::coregs3 {
@@ -44,6 +45,7 @@ struct TapStream {
   struct Stq {
     float u = 0.0f;
     float v = 0.0f;
+    float q = 1.0f;  // the tapped STQ Q (TASK-090 texture mip: the explicit LOD formula's input)
     std::uint8_t valid = 0;
   };
   std::vector<Stq> stq;
@@ -76,6 +78,16 @@ void apply_register(TrackedState &tracked, const GifRegisterWrite &write, Textur
     case 0x17u:  // TEX2_2
       tracked.texture.tex2 = write.data;
       tracked.texture.tex2_known = true;
+      break;
+    case 0x34u:  // MIPTBP1_1
+    case 0x35u:  // MIPTBP1_2
+      tracked.texture.miptbp1 = write.data;
+      tracked.texture.miptbp1_known = true;
+      break;
+    case 0x36u:  // MIPTBP2_1
+    case 0x37u:  // MIPTBP2_2
+      tracked.texture.miptbp2 = write.data;
+      tracked.texture.miptbp2_known = true;
       break;
     case 0x42u:  // ALPHA_1
     case 0x43u:  // ALPHA_2
@@ -224,6 +236,7 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
             if (vertex.has_st && vertex.q != 0.0f) {
               sample.u = vertex.s / vertex.q;
               sample.v = vertex.t / vertex.q;
+              sample.q = vertex.q;
               sample.valid = 1;
             }
             stream.stq.push_back(sample);
@@ -288,9 +301,12 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
     std::uint64_t clamp = 0;
     std::uint64_t tex2 = 0;
     std::uint32_t image = 0;
+    std::uint64_t miptbp1 = 0;  // TASK-090 texture mip: the resolved chain words, so two images/states never share one
+    std::uint64_t miptbp2 = 0;
   };
   const auto same_state = [](const StateKey &a, const StateKey &b) {
-    return a.tex0 == b.tex0 && a.tex1 == b.tex1 && a.clamp == b.clamp && a.tex2 == b.tex2 && a.image == b.image;
+    return a.tex0 == b.tex0 && a.tex1 == b.tex1 && a.clamp == b.clamp && a.tex2 == b.tex2 && a.image == b.image &&
+           a.miptbp1 == b.miptbp1 && a.miptbp2 == b.miptbp2;
   };
   std::vector<std::pair<StateKey, const SampledTexture *>> state_cache;
 
@@ -319,8 +335,26 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
     sampler.th = decoded.record.th;
     sampler.tcc = decoded.record.tcc;
     sampler.tfx = decoded.record.tfx;
-    sampler.mxl = decoded.level0_mip_fallback ? 0u : decoded.record.mxl;
+    // TASK-090 texture mip: a complete chain keeps the record's MXL and real MMAG/MMIN; without one the sampler keeps
+    // the level-0 fallback (MXL stored as 0 so the level-0 subset accepts it) and the fact is counted.
+    sampler.mip_ready = !decoded.mip_levels.empty();
+    sampler.mxl = sampler.mip_ready ? decoded.record.mxl : 0u;
+    sampler.miptbp1 = decoded.miptbp1;
+    sampler.miptbp2 = decoded.miptbp2;
+    sampler.miptbp_from_state = decoded.miptbp_from_state;
+    sampler.mip_levels.resize(decoded.mip_levels.size());
+    for (std::size_t level = 0; level < decoded.mip_levels.size(); ++level) {
+      const DecodedTexture::MipLevel &source = decoded.mip_levels[level];
+      SampledTexture::MipLevel &destination = sampler.mip_levels[level];
+      destination.level = source.level;
+      destination.width = source.width;
+      destination.height = source.height;
+      destination.rgba = source.rgba;
+    }
     sampler.level0_mip_fallback = decoded.level0_mip_fallback;
+    sampler.lcm = decoded.record.lcm;
+    sampler.lod_l = 0;
+    sampler.lod_k_raw = 0;
     sampler.mmag = decoded.record.mmag;
     sampler.mmin = decoded.record.mmin;
     if (decoded.level0_mip_fallback) {
@@ -328,13 +362,21 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
       // GS's minification filter at level 0 is its low bit (0 = nearest) and the magnification filter is replaced by the
       // same nearest form. The mixed MMAG/MMIN pair the car sampler refuses is therefore not passed on.
       sampler.mmag = sampler.mmin = decoded.record.mmin & 1u;
-    } else if (options.world_channels && decoded.record.mmin > 1u && decoded.record.mmag != decoded.record.mmin) {
+    } else if (!sampler.mip_ready && options.world_channels && decoded.record.mmin > 1u &&
+               decoded.record.mmag != decoded.record.mmin) {
       // The world path's level-0 filter fallback: the record asks for a mip filter (MMIN 2/3) but only level 0 is
       // decoded here, so the GS's level-0 minification filter is MMIN's low bit (2 -> nearest, 3 -> linear) and the
       // magnification filter is set to the same form. Counted; the car path keeps its measured refusal.
       sampler.mmag = sampler.mmin = decoded.record.mmin & 1u;
       counters.records_filter_fallback += 1;
     }
+    if (sampler.mip_ready) {
+      const hwgs::lod::Tex1Fields fields = hwgs::lod::decode_tex1(decoded.record.tex1);
+      sampler.lcm = fields.lcm ? 1u : 0u;
+      sampler.lod_l = fields.l;
+      sampler.lod_k_raw = fields.k_raw;
+    }
+    sampler.tbp0 = decoded.record.tbp0;
     sampler.wms = decoded.record.wms;
     sampler.wmt = decoded.record.wmt;
     sampler.minu = decoded.record.minu;
@@ -367,6 +409,7 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
     std::string decode_error;
     TextureDecodeOptions decode_options;
     decode_options.level0_mip_fallback = options.world_channels;
+    decode_options.decode_mip_levels = options.world_channels && options.world_mip;
     if (decode_texture(image, record.bytes, sizeof record.bytes, decode_options, decoded, decode_error) !=
         TextureStatus::ok) {
       counters.records_refused += 1;
@@ -374,6 +417,8 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
     }
     counters.records_decoded += 1;
     if (decoded.level0_mip_fallback) counters.records_level0_fallback += 1;
+    if (decoded.mip_levels_missing != 0u) counters.records_mip_levels_missing += 1;
+    if (!decoded.mip_levels.empty()) counters.records_mip_chains += 1;
     const std::uint32_t slot = payload_slot(decoded);
     table.textures.push_back(make_sampler(decoded, slot, false, nullptr));
     entry.sampler = &table.textures.back();
@@ -383,15 +428,40 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
   // TASK-090 track textures: decode from the tapped GS state. The payload is shared with the record path by Format G
   // key; the sampler itself is per distinct state, because the filter/wrap fields come from the registers, not the
   // record. A refusal is counted and named, never substituted with the record.
-  const auto decode_state = [&](const TextureState &state, const SlmImage &image,
-                                std::uint32_t image_id) -> const SampledTexture * {
-    const StateKey key{state.tex0, state.tex1, state.clamp, state.tex2_known ? state.tex2 : 0u, image_id};
+  const auto decode_state = [&](const TextureState &state, const SlmImage &image, std::uint32_t image_id,
+                                const CapturedTexture *record) -> const SampledTexture * {
+    // TASK-090 texture mip: the MIPTBP words. The tap wins when the VU1 stream wrote them; otherwise the item's 40-byte
+    // record supplies them (the texture set's own words), counted as inherited. No source means the chain cannot be
+    // proven and the level-0 fallback applies.
+    std::uint64_t miptbp1 = 0, miptbp2 = 0;
+    bool mip_registers_known = false;
+    if (state.miptbp1_known || state.miptbp2_known) {
+      miptbp1 = state.miptbp1;
+      miptbp2 = state.miptbp2;
+      mip_registers_known = true;
+    } else if (record != nullptr) {
+      TextureRecord fields;
+      std::string parse_error;
+      if (parse_texture_record(record->bytes, sizeof record->bytes, fields, parse_error)) {
+        miptbp1 = fields.miptbp1;
+        miptbp2 = fields.miptbp2;
+        mip_registers_known = true;
+        counters.world_mip_registers_from_record += 1;
+      }
+    }
+    if (state.miptbp1_known || state.miptbp2_known) counters.world_mip_registers_from_tap += 1;
+    const StateKey key{state.tex0, state.tex1, state.clamp, state.tex2_known ? state.tex2 : 0u, image_id,
+                       miptbp1, miptbp2};
     for (const auto &[cached_key, cached_sampler] : state_cache)
       if (same_state(cached_key, key)) return cached_sampler;
     DecodedTexture decoded;
     std::string decode_error;
     TextureDecodeOptions decode_options;
     decode_options.level0_mip_fallback = options.world_channels;
+    decode_options.decode_mip_levels = options.world_channels && options.world_mip;
+    decode_options.mip_registers_known = mip_registers_known;
+    decode_options.mip_bp1 = miptbp1;
+    decode_options.mip_bp2 = miptbp2;
     if (decode_texture_state(image, state, decode_options, decoded, decode_error) != TextureStatus::ok) {
       counters.world_state_refused += 1;
       if (counters.state_refusals.size() < 16) {
@@ -406,12 +476,56 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
     }
     counters.records_decoded += 1;
     if (decoded.level0_mip_fallback) counters.records_level0_fallback += 1;
+    if (decoded.mip_levels_missing != 0u) counters.records_mip_levels_missing += 1;
+    if (!decoded.mip_levels.empty()) counters.records_mip_chains += 1;
     if (decoded.palette_via_tex2) counters.world_state_palette_tex2 += 1;
     const std::uint32_t slot = payload_slot(decoded);
     table.textures.push_back(make_sampler(decoded, slot, true, &state));
     const SampledTexture *result = &table.textures.back();
     state_cache.emplace_back(key, result);
     return result;
+  };
+
+  // TASK-090 texture mip: the explicit per-vertex LOD of one item (chapter 01.5/03.6). It needs a complete chain and
+  // the item's tapped STQ Q; a chain without Q keeps the counted level-0 fallback. The LOD is the GS formula
+  // K/16 - log2|Q|*2^L (LCM = 0) or K/16 (LCM = 1), which is what the reference's CoreGS 2.0 shader samples with
+  // (hw_pixel_uber.frag, sample_mipmapped); the level is that value clamped to [0, MXL], not a value relative to a
+  // selected base level (the base-level rule belongs to the GPU image layout, not to the sampled LOD).
+  const auto attach_mip_lod = [&](TextureBinding &binding, const TapStream *stream) {
+    if (!options.world_mip || binding.texture == nullptr || !binding.texture->mip_ready) return;
+    binding.mip_base_level = 0;
+    if (stream == nullptr || stream->stq.empty()) {
+      counters.world_mip_lod_missing += 1;
+      return;
+    }
+    hwgs::lod::Tex1Fields fields;
+    fields.lcm = binding.texture->lcm != 0;
+    fields.mxl = binding.texture->mxl;
+    fields.mmag_linear = binding.texture->mmag != 0;
+    fields.mmin = binding.texture->mmin;
+    fields.mtba = false;
+    fields.l = binding.texture->lod_l;
+    fields.k_raw = binding.texture->lod_k_raw;
+    binding.vertex_lod.assign(stream->stq.size(), 0.0f);
+    bool any = false;
+    for (std::size_t index = 0; index < stream->stq.size(); ++index) {
+      if (stream->stq[index].valid == 0) continue;
+      const double lod =
+          hwgs::lod::lod_from_q(stream->stq[index].q, fields.l, fields.k_raw, fields.lcm);
+      binding.vertex_lod[index] = static_cast<float>(lod);
+      counters.world_mip_lod_min = std::min(counters.world_mip_lod_min, lod);
+      counters.world_mip_lod_max = std::max(counters.world_mip_lod_max, lod);
+      counters.world_mip_lod_sum += lod;
+      counters.world_mip_q_min = std::min(counters.world_mip_q_min, static_cast<double>(stream->stq[index].q));
+      counters.world_mip_q_max = std::max(counters.world_mip_q_max, static_cast<double>(stream->stq[index].q));
+      counters.world_mip_lod_vertices += 1;
+      any = true;
+    }
+    if (!any) {
+      counters.world_mip_lod_missing += 1;
+      return;
+    }
+    counters.world_mip_lod_items += 1;
   };
 
   // ---- 4. Bind every item and attach its tapped state.
@@ -744,13 +858,21 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
         if (tapped == nullptr) counters.world_texture_pair_none += 1;
         const bool state_present = tapped != nullptr && tapped->any_register_known();
         if (tapped != nullptr && tapped->sampling_registers_known()) {
-          const SampledTexture *sampler = decode_state(*tapped, *item_slm, item_image_id);
+          const SampledTexture *sampler =
+              decode_state(*tapped, *item_slm, item_image_id,
+                           has_record ? &frame.textures[item.texture_record] : nullptr);
           if (sampler == nullptr) {
             counters.items_decode_refused += 1;
             counters.items_untextured += 1;
             continue;
           }
           binding.texture = sampler;
+          if (have_texture_pick) {
+            binding.vertex_q.resize(streams[texture_pick].stq.size());
+            for (std::size_t vertex = 0; vertex < streams[texture_pick].stq.size(); ++vertex)
+              binding.vertex_q[vertex] = streams[texture_pick].stq[vertex].q;
+          }
+          attach_mip_lod(binding, have_texture_pick ? &streams[texture_pick] : nullptr);
           note_world_image(draw_image, overlay_kind);
           counters.world_state_decoded += 1;
           counters.items_textured += 1;
@@ -780,6 +902,7 @@ bool build_frame_texture_table(const FrameSnapshot &frame, const SlmImage &slm, 
           continue;
         }
         binding.texture = sampler;
+        attach_mip_lod(binding, nullptr);
         note_world_image(draw_image, overlay_kind);
         counters.items_textured += 1;
         continue;

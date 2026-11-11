@@ -508,7 +508,7 @@ if(GT4_HW_GS)
     # texture table (coregs3_texture_frame.cpp) calls the decoder and is guarded by the same condition and define.
     target_sources(gt4_coregs3 PRIVATE coregs3/coregs3_texture.cpp coregs3/coregs3_texture_frame.cpp
                    coregs3/coregs3_hud.cpp)
-    target_link_libraries(gt4_coregs3 PUBLIC gt4_hw_core hw_gs_replace)
+    target_link_libraries(gt4_coregs3 PUBLIC gt4_hw_core hw_gs_replace hw_gs_lod)
     target_compile_definitions(gt4_coregs3 PUBLIC GT4_COREGS3_TEXTURES)
     target_link_libraries(gt4_gs_stream_client PUBLIC gt4_hw_stream_sink)
     target_compile_definitions(gt4_gs_stream_client PRIVATE GT4_GS_STREAM_HW)

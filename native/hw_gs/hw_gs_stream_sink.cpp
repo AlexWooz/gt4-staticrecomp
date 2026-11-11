@@ -1039,6 +1039,9 @@ private:
 
   // TASK-090 pass textures: copies the texture/palette pages the job's TEX0 writes bind, before the job executes. The
   // job's records are XGKICK output (whole GIF packets, the tap parser's input); their A+D writes carry TEX0_1/2.
+  // TASK-090 texture mip: TEX1 (MXL) and MIPTBP1/2 are tracked in transfer order, so a draw that samples a mip chain
+  // also captures the levels it reads; without them the offline decode falls back to whatever later upload sits at the
+  // level address (the measured road case: another texture's page).
   struct BufferedRecord {
     std::uint8_t path = 0;
     std::size_t offset = 0;
@@ -1047,13 +1050,25 @@ private:
   void SnapshotJobTextures(std::uint64_t job) {
     gt4::coregs3::vram::Window windows[gt4::coregs3::vram::kMaxCaptureWindows] = {};
     std::uint32_t windowCount = 0;
+    std::uint64_t tex1 = 0, miptbp1 = 0, miptbp2 = 0;
     for (const BufferedRecord &buffered : jobRecords_) {
       const gt4::coregs3::GifPacket packet =
           gt4::coregs3::parse_gif(jobBytes_.data() + buffered.offset, buffered.bytes);
       if (!packet.ok) continue;
       for (const gt4::coregs3::GifRegisterWrite &write : packet.ad_writes) {
-        if (write.address == 0x06u || write.address == 0x07u)
-          gt4::coregs3::texture_windows_from_tex0(write.data, windows, windowCount);
+        switch (write.address) {
+          case 0x06u:
+          case 0x07u:
+            gt4::coregs3::texture_windows_from_state(write.data, tex1, miptbp1, miptbp2, windows, windowCount);
+            break;
+          case 0x14u:
+          case 0x15u: tex1 = write.data; break;
+          case 0x34u:
+          case 0x35u: miptbp1 = write.data; break;
+          case 0x36u:
+          case 0x37u: miptbp2 = write.data; break;
+          default: break;
+        }
       }
     }
     if (windowCount == 0) return;

@@ -539,14 +539,17 @@ bool draw_mark_at_post() noexcept {
   return post;
 }
 
-// TASK-090 pass textures: the GS blocks a draw's texture records name (the shared rule is coregs3_texwin.hpp).
+// TASK-090 pass textures: the GS blocks a draw's texture records name (the shared rule is coregs3_texwin.hpp). TASK-090
+// texture mip: a record with TEX1.MXL > 0 also names its mip levels through MIPTBP1/MIPTBP2, and the snapshot must carry
+// them or the offline decoder samples whatever later upload sits at the level address.
 void collect_draw_windows(const FrameSnapshot &frame, const CapturedDraw &draw, vram::Window *windows,
                           std::uint32_t &count) noexcept {
   for (std::uint32_t index = 0; index < draw.item_count; ++index) {
     const std::uint32_t slot = draw.items[index].texture_record;
     if (slot == kNoRecord || slot >= frame.textures.size()) continue;
     const std::uint8_t *bytes = frame.textures[slot].bytes;
-    texture_windows_from_tex0(vram::read_u64(bytes, 0), windows, count);
+    texture_windows_from_state(vram::read_u64(bytes, 0), vram::read_u64(bytes, 8), vram::read_u64(bytes, 16),
+                               vram::read_u64(bytes, 24), windows, count);
   }
 }
 
