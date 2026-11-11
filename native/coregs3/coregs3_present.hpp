@@ -13,9 +13,12 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <string>
 
 #include "coregs3_lighting.hpp"
+#include "coregs3_presentation.hpp"
 #include "coregs3_scene.hpp"
+#include "coregs3_timeline.hpp"
 
 namespace gt4::coregs3::present {
 
@@ -76,5 +79,69 @@ void note_render(std::uint64_t vblank, std::uint32_t draws, std::uint32_t draws_
                  std::uint64_t vertices, std::uint64_t vertices_unlit, std::uint64_t triangles,
                  const LightCounters &lighting) noexcept;
 void note_pass_refused(std::uint32_t draws_refused) noexcept;
+
+// --- the presentation timeline (docs/COREGS3-PLAN.md §5.5) ----------------------------------------------------------
+// The live layer presents at a constant rate chosen by the owner (20/30/45/60/120/144 Hz, default 60) instead of once
+// per guest VBlank: every guest frame is recorded in a `coregs3::FrameRing` with its guest timestamp and camera, and
+// each presentation instant interpolates the two latest frames (coregs3_presentation.hpp). The guest itself is never
+// retimed. `nearest` repeats the nearest captured frame, the baseline the interpolation is measured against.
+struct TimelineConfig {
+  std::uint32_t hz = 0;  // 0: not configured (the layer must refuse)
+  PresentationMode mode = PresentationMode::interpolate;
+  // Diagnostic for image evidence: draw only this due tick of each guest frame (0-based), leaving that tick's image in
+  // the composed frame; UINT32_MAX draws every due tick, so the last one is what a present would show.
+  std::uint32_t selected_tick = UINT32_MAX;
+};
+
+// Reads GT4_COREGS3_PRESENT_HZ (default 60), GT4_COREGS3_PRESENT_MODE (interpolate|nearest, default interpolate) and
+// the diagnostic GT4_COREGS3_PRESENT_TICK. An unusable value is refused with `error`, never defaulted.
+bool timeline_config_from_environment(TimelineConfig &config, std::string &error) noexcept;
+void set_timeline_config(const TimelineConfig &config) noexcept;
+const TimelineConfig &timeline_config() noexcept;
+bool timeline_configured() noexcept;
+
+// The timeline's own counters; every field is atomic so the F8 report thread can read them. `interpolated` counts
+// objects drawn with a blended matrix, `entrywise` those blended entry by entry (the rank-deficient fallback), and
+// `nearest` those drawn with a captured matrix. `predicted` stays 0 until the prediction switch lands.
+struct TimelineCounters {
+  std::atomic<std::uint64_t> frames{0};        // guest frames recorded in the timeline
+  std::atomic<std::uint64_t> instants{0};      // presentation instants produced by the clock
+  std::atomic<std::uint64_t> skipped{0};       // instants lost to a stall (the clock jumped to the newest grid point)
+  std::atomic<std::uint64_t> pairs{0};         // instants whose frame pair and camera could be used
+  std::atomic<std::uint64_t> pairs_refused{0}; // unordered/too far apart, camera invalid, or a camera cut
+  std::atomic<std::uint64_t> paired{0};        // objects present in both frames
+  std::atomic<std::uint64_t> only_newer{0};
+  std::atomic<std::uint64_t> only_older{0};
+  std::atomic<std::uint64_t> interpolated{0};  // objects drawn with the rigid interpolation
+  std::atomic<std::uint64_t> entrywise{0};     // objects drawn with the entrywise fallback
+  std::atomic<std::uint64_t> nearest{0};       // objects drawn with a captured matrix
+  std::atomic<std::uint64_t> predicted{0};     // reserved; prediction is not implemented here
+  std::atomic<std::uint64_t> dropped_discontinuity{0};  // objects dropped to the newest frame by a cut/teleport
+  std::atomic<std::uint64_t> draw_ticks{0};    // presentation ticks the layer actually drew
+  // Frame-time histogram of the presentation clock: the interval between consecutive instants, in guest ticks (8-tick
+  // buckets, the last bucket is 248+) and the exact arithmetic the report prints.
+  std::atomic<std::uint64_t> interval_count{0};
+  std::atomic<std::uint64_t> interval_sum{0};
+  std::atomic<std::uint64_t> interval_min{0};
+  std::atomic<std::uint64_t> interval_max{0};
+  std::array<std::atomic<std::uint64_t>, 32> interval_hist{};
+};
+const TimelineCounters &timeline_counters() noexcept;
+void note_draw_tick() noexcept;  // the layer drew one presentation tick
+
+// Records one claimed guest frame in the timeline and advances the presentation clock. Called once per guest VBlank
+// by the live layer, whether or not the frame is drawn (a headless run still samples the timeline every frame).
+// Not noexcept: it allocates the frame's object list.
+void note_guest_frame(const FrameSnapshot &frame);
+
+// The instants the latest guest frame made due (a fixed grid in guest ticks; see PresentationClock).
+PresentationClock::Due due_ticks() noexcept;
+
+// The transforms of the newest frame's objects at one presentation instant, ready for the present layer. Objects of
+// the newest frame only: the newest frame's draw list is the image's reference (an object that disappeared from it is
+// counted `only_older` and not drawn). `count` adds the outcome to `timeline_counters()`: the timeline counts every
+// instant once in `note_guest_frame` (so the counters describe the whole timeline, not only the frames a headless run
+// dumps), and the layer's own draw pass passes false. Not noexcept: allocates.
+void interpolated_transforms(std::uint64_t instant_ticks, std::vector<DrawTransform> &out, bool count);
 
 }  // namespace gt4::coregs3::present

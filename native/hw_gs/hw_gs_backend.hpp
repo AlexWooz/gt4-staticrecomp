@@ -201,6 +201,10 @@ public:
 
   void flush();       // submits recorded work, never waits
   void next_frame(); // headless frame boundary
+  // TASK-090 live timeline: once per guest VBlank, hands the newest captured frame to the CoreGS 3.0 present layer's
+  // presentation timeline (no-op unless GT4_COREGS3=present). The layer draws the presentation ticks that became due
+  // when it is handed a composed image (windowed end_frame or a headless dump), not here.
+  void coregs3_guest_frame();
   // TASK-090 pass textures: the K7 pass-begin / K1 draw SLM snapshots, called in GS stream order
   // (native/coregs3/coregs3_vram.hpp).
   void coregs3_snapshot(std::uint32_t kind, std::uint32_t pass, std::uint32_t label, std::uint64_t vblank,

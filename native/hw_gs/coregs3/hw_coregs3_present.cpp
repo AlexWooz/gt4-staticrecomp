@@ -21,10 +21,12 @@
 #include "../writeback/hw_gs_vulkan_device_table.hpp"
 
 #include "coregs3_lighting.hpp"
+#include "coregs3_presentation.hpp"
 #include "coregs3_present.hpp"
 #include "coregs3_render.hpp"
 #include "coregs3_scene.hpp"
 #include "coregs3_shape.hpp"
+#include "coregs3_vertex.hpp"
 
 #include <algorithm>
 #include <array>
@@ -78,6 +80,28 @@ bool format_has(VkPhysicalDevice physical, VkFormat format, VkFormatFeatureFlags
   return (properties.optimalTilingFeatures & wanted) == wanted;
 }
 
+bool finite_rows(const float *rows) {
+  for (int index = 0; index < 16; ++index)
+    if (!(rows[index] == rows[index]) || rows[index] == std::numeric_limits<float>::infinity() ||
+        rows[index] == -std::numeric_limits<float>::infinity())
+      return false;
+  return true;
+}
+
+// The push-constant columns for a row-major model->clip matrix whose linear part is in the shape-scaled upload space
+// (the `draw_matrix.row` form): a metre position multiplies it by 4096 for a V3-16 channel and by 1 for a V3-32
+// channel (coregs3_vertex.hpp), and the translation column is never scaled.
+gt4::coregs3::VertexColumns columns_from_upload_rows(const float *rows, gt4::coregs3::PositionEncoding encoding) {
+  const float scale = encoding == gt4::coregs3::PositionEncoding::integer_16
+                          ? gt4::coregs3::kModelPositionUnitsPerMetre
+                          : 1.0f;
+  gt4::coregs3::VertexColumns columns;
+  for (int column = 0; column < 3; ++column)
+    for (int row = 0; row < 4; ++row) columns.column[column][row] = rows[row * 4 + column] * scale;
+  for (int row = 0; row < 4; ++row) columns.column[3][row] = rows[row * 4 + 3];
+  return columns;
+}
+
 }  // namespace
 
 struct PresentLayer::Impl {
@@ -104,6 +128,15 @@ struct PresentLayer::Impl {
   std::uint32_t depth_width = 0;
   std::uint32_t depth_height = 0;
 
+  // The composed image saved before the first presentation tick of a guest frame. A rate above 60 Hz draws several
+  // ticks over the same 60 Hz composed base; restoring the base before every later tick keeps a tick's interpolated
+  // cars from leaving ghosts of the previous tick. R32_UINT like the target, no view needed, both images stay GENERAL.
+  VkImage base_image = VK_NULL_HANDLE;
+  VkDeviceMemory base_memory = VK_NULL_HANDLE;
+  std::uint32_t base_width = 0;
+  std::uint32_t base_height = 0;
+  bool base_general = false;  // the base was transitioned out of UNDEFINED
+
   // Host-visible vertex buffer, grown as the captured frames need.
   VkBuffer vertex_buffer = VK_NULL_HANDLE;
   VkDeviceMemory vertex_memory = VK_NULL_HANDLE;
@@ -112,8 +145,10 @@ struct PresentLayer::Impl {
 
   // Reused between frames: the claim swaps the ring's buffers into these vectors, and build_frame refills them.
   gt4::coregs3::FrameSnapshot frame;
+  bool has_frame = false;  // at least one complete frame was claimed
   std::vector<PresentVertex> vertices;
   std::vector<DrawRange> ranges;
+  std::vector<gt4::coregs3::DrawTransform> transforms;  // the presentation instant's per-object matrices
 
   void destroy_depth() {
     if (framebuffer != VK_NULL_HANDLE) gt4_hwd_vkDestroyFramebuffer(config.device, framebuffer, nullptr);
@@ -126,6 +161,16 @@ struct PresentLayer::Impl {
     depth_memory = VK_NULL_HANDLE;
     depth_width = 0;
     depth_height = 0;
+  }
+
+  void destroy_base() {
+    if (base_image != VK_NULL_HANDLE) gt4_hwd_vkDestroyImage(config.device, base_image, nullptr);
+    if (base_memory != VK_NULL_HANDLE) gt4_hwd_vkFreeMemory(config.device, base_memory, nullptr);
+    base_image = VK_NULL_HANDLE;
+    base_memory = VK_NULL_HANDLE;
+    base_width = 0;
+    base_height = 0;
+    base_general = false;
   }
 
   void destroy_vertex_buffer() {
@@ -144,6 +189,7 @@ struct PresentLayer::Impl {
     const VkDevice device = config.device;
     if (device == VK_NULL_HANDLE) return;
     destroy_depth();
+    destroy_base();
     destroy_vertex_buffer();
     if (pipeline != VK_NULL_HANDLE) gt4_hwd_vkDestroyPipeline(device, pipeline, nullptr);
     if (render_pass != VK_NULL_HANDLE) gt4_hwd_vkDestroyRenderPass(device, render_pass, nullptr);
@@ -470,25 +516,100 @@ struct PresentLayer::Impl {
     return true;
   }
 
+  // The scratch copy of the composed image (see `base_image`). TRANSFER_DST for the save, TRANSFER_SRC for the restores.
+  bool ensure_base_image(std::uint32_t width, std::uint32_t height, std::string &error) {
+    if (base_image != VK_NULL_HANDLE && base_width == width && base_height == height) return true;
+    destroy_base();
+    VkImageCreateInfo image_info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    image_info.imageType = VK_IMAGE_TYPE_2D;
+    image_info.format = kTargetFormat;
+    image_info.extent = {width, height, 1};
+    image_info.mipLevels = 1;
+    image_info.arrayLayers = 1;
+    image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (gt4_hwd_vkCreateImage(config.device, &image_info, nullptr, &base_image) != VK_SUCCESS) {
+      error = "vkCreateImage failed for the CoreGS 3.0 present base image";
+      return false;
+    }
+    VkMemoryRequirements requirements{};
+    gt4_hwd_vkGetImageMemoryRequirements(config.device, base_image, &requirements);
+    VkPhysicalDeviceMemoryProperties memory{};
+    gt4_hwd_vkGetPhysicalDeviceMemoryProperties(config.physical, &memory);
+    std::uint32_t type = 0;
+    if (!find_memory_type(memory, requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, type)) {
+      error = "no device-local memory for the CoreGS 3.0 present base image";
+      destroy_base();
+      return false;
+    }
+    VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocate.allocationSize = requirements.size;
+    allocate.memoryTypeIndex = type;
+    if (gt4_hwd_vkAllocateMemory(config.device, &allocate, nullptr, &base_memory) != VK_SUCCESS) {
+      error = "vkAllocateMemory failed for the CoreGS 3.0 present base image";
+      destroy_base();
+      return false;
+    }
+    if (gt4_hwd_vkBindImageMemory(config.device, base_image, base_memory, 0) != VK_SUCCESS) {
+      error = "vkBindImageMemory failed for the CoreGS 3.0 present base image";
+      destroy_base();
+      return false;
+    }
+    base_width = width;
+    base_height = height;
+    return true;
+  }
+
   // One captured draw -> one triangle-list draw call per measured position encoding. Positions are metres (build_mesh's
   // scale) and colours are the per-item lit vertex colours (coregs3_lighting.hpp, shade_mesh_items): every item is
   // shaded with its own program and its own TOPS+0xC9 block, and the push constant carries the draw's metre columns
   // (coregs3_vertex.hpp: the linear part scaled by the shape's `value` and by the encoding's units, translation
-  // unscaled). Returns false when the frame as a whole cannot be drawn (capacity); a draw that fails to decode is
-  // counted in `refused` and left to the GS-drawn image underneath. `unlit_draws` counts the drawn draws with no lit
-  // vertex; `unlit_vertices` counts the uploaded triangle corners that kept their base colour. `lighting` accumulates
-  // the per-family and per-status detail the F8 report prints.
-  bool build_frame(std::uint32_t &refused, std::uint32_t &unlit_draws, std::uint64_t &unlit_vertices,
-                   gt4::coregs3::LightCounters &lighting) {
+  // unscaled). `overrides` is the presentation timeline's matrix per object of this frame: a `captured_newer` entry
+  // draws exactly as the capture does (byte-identical at 60 Hz), any other entry builds the metre columns from its
+  // row-major upload-space matrix. Returns false when the frame as a whole cannot be drawn (capacity); a draw that
+  // fails to decode is counted in `refused` and left to the GS-drawn image underneath. `unlit_draws` counts the drawn
+  // draws with no lit vertex; `unlit_vertices` counts the uploaded triangle corners that kept their base colour.
+  // `lighting` accumulates the per-family and per-status detail the F8 report prints.
+  bool build_frame(const std::vector<gt4::coregs3::DrawTransform> *overrides, std::uint32_t &refused,
+                   std::uint32_t &unlit_draws, std::uint64_t &unlit_vertices, gt4::coregs3::LightCounters &lighting) {
     vertices.clear();
     ranges.clear();
     refused = 0;
     unlit_draws = 0;
     unlit_vertices = 0;
     std::vector<gt4::coregs3::ShadedVertex> shades;
+    // Instance numbering exactly as timeline_frame numbers it: accepted draws (valid matrix) in draw order, per id.
+    std::vector<std::pair<std::uint64_t, std::uint32_t>> instances;
     for (const gt4::coregs3::CapturedDraw &draw : frame.draws) {
       const gt4::coregs3::DrawMatrix matrix = gt4::coregs3::draw_matrix(draw);
       if (!matrix.valid) {
+        ++refused;
+        continue;
+      }
+      gt4::coregs3::ObjectKey key = gt4::coregs3::object_key(draw);
+      std::uint32_t instance = 0;
+      bool known = false;
+      for (auto &entry : instances)
+        if (entry.first == key.id) {
+          instance = entry.second;
+          entry.second += 1;
+          known = true;
+          break;
+        }
+      if (!known) instances.push_back({key.id, 1u});
+      key.instance = instance;
+      const gt4::coregs3::DrawTransform *override = nullptr;
+      if (overrides != nullptr)
+        for (const gt4::coregs3::DrawTransform &candidate : *overrides)
+          if (candidate.key.id == key.id && candidate.key.instance == key.instance) {
+            override = &candidate;
+            break;
+          }
+      const bool blend = override != nullptr && override->source != gt4::coregs3::TransformSource::captured_newer;
+      if (blend && !finite_rows(override->matrix)) {
         ++refused;
         continue;
       }
@@ -538,15 +659,20 @@ struct PresentLayer::Impl {
       bool have_range = false;
       DrawRange range;
       const auto open_range = [&](gt4::coregs3::PositionEncoding encoding) {
-        const gt4::coregs3::VertexColumns &columns = encoding == gt4::coregs3::PositionEncoding::integer_16
-                                                         ? matrix.integer_positions
-                                                         : matrix.float_positions;
+        gt4::coregs3::VertexColumns built;
+        const gt4::coregs3::VertexColumns *columns = encoding == gt4::coregs3::PositionEncoding::integer_16
+                                                         ? &matrix.integer_positions
+                                                         : &matrix.float_positions;
+        if (blend) {
+          built = columns_from_upload_rows(override->matrix, encoding);
+          columns = &built;
+        }
         range = DrawRange{};
         range.first = static_cast<std::uint32_t>(vertices.size());
         range.count = 0;
         range_encoding = encoding;
         have_range = true;
-        std::memcpy(range.columns, &columns.column[0][0], sizeof range.columns);
+        std::memcpy(range.columns, &columns->column[0][0], sizeof range.columns);
       };
       for (std::size_t index = 0; index + 2 < mesh.indices.size(); index += 3) {
         const gt4::coregs3::PositionEncoding encoding =
@@ -576,25 +702,74 @@ struct PresentLayer::Impl {
     return !ranges.empty();
   }
 
-  bool render(std::uint64_t target, std::uint32_t width, std::uint32_t height, const SubmitOverlay &submit,
-              std::string &error) {
+  // Claims the newest complete captured frame and records it in the presentation timeline. Called once per guest
+  // VBlank by the backend, whether or not a picture is drawn: the timeline must sample every 60 Hz guest state.
+  bool note_guest_frame(std::string &error) {
     if (!initialised) {
       error = "the CoreGS 3.0 present layer is not initialised";
       return false;
     }
-    if (width == 0 || height == 0) return true;  // nothing to draw into
     if (!gt4::coregs3::present::claim_latest(frame)) return true;  // no new complete frame
-    std::uint32_t refused = 0;
-    std::uint32_t unlit_draws = 0;
-    std::uint64_t unlit_vertices = 0;
-    gt4::coregs3::LightCounters lighting;
-    if (frame.draw_count == 0 || !build_frame(refused, unlit_draws, unlit_vertices, lighting)) {
-      gt4::coregs3::present::note_pass_refused(refused);
-      return true;
-    }
+    has_frame = true;
+    gt4::coregs3::present::note_guest_frame(frame);
+    return true;
+  }
 
+  // Records the copy of the composed image into `base_image` (the first tick of a guest frame) or the restore of that
+  // base into the target (every later tick). Both images stay in GENERAL; only the access masks change. Without the
+  // restore, the second tick of a 120 Hz frame would draw over the first tick's cars.
+  void record_base_copy(VkImage target, std::uint32_t width, std::uint32_t height, bool first_tick) {
+    const auto make = [](VkImage image, VkAccessFlags source, VkAccessFlags destination, bool from_undefined) {
+      VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+      barrier.srcAccessMask = source;
+      barrier.dstAccessMask = destination;
+      barrier.oldLayout = from_undefined ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_GENERAL;
+      barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+      barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      barrier.image = image;
+      barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      return barrier;
+    };
+    VkImageCopy region{};
+    region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.dstSubresource = region.srcSubresource;
+    region.extent = {width, height, 1};
+    if (first_tick) {
+      // Composition (or the previous tick) wrote the target with a compute/fragment shader; the base starts undefined.
+      VkImageMemoryBarrier before[2] = {
+          make(target, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, false),
+          make(base_image, 0, VK_ACCESS_TRANSFER_WRITE_BIT, !base_general)};
+      gt4_hw_vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, before);
+      gt4_hwd_vkCmdCopyImage(command, target, VK_IMAGE_LAYOUT_GENERAL, base_image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+      VkImageMemoryBarrier after[2] = {
+          make(base_image, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, false),
+          make(target, VK_ACCESS_TRANSFER_READ_BIT,
+               VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT, false)};
+      gt4_hw_vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr,
+                                  0, nullptr, 2, after);
+      base_general = true;
+    } else {
+      VkImageMemoryBarrier before = make(target, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, false);
+      gt4_hw_vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                                  nullptr, 0, nullptr, 1, &before);
+      gt4_hwd_vkCmdCopyImage(command, base_image, VK_IMAGE_LAYOUT_GENERAL, target, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+      VkImageMemoryBarrier after =
+          make(target, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT, false);
+      gt4_hw_vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                      VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                  0, 0, nullptr, 0, nullptr, 1, &after);
+    }
+  }
+
+  // One presentation tick: uploads the vertices build_frame produced and draws them over `target` (after saving or
+  // restoring the composed base). Waits for the submission before returning.
+  bool draw_tick(std::uint64_t target, std::uint32_t width, std::uint32_t height, const SubmitOverlay &submit,
+                 bool first_tick, std::string &error) {
     const VkDevice device = config.device;
-    if (!ensure_depth(width, height, error)) return false;
     const VkDeviceSize vertex_bytes = static_cast<VkDeviceSize>(vertices.size()) * sizeof(PresentVertex);
     if (!ensure_vertex_buffer(vertex_bytes, error)) return false;
 
@@ -645,21 +820,7 @@ struct PresentLayer::Impl {
       error = "vkBeginCommandBuffer failed for the CoreGS 3.0 present pass";
       return false;
     }
-    {
-      // Composition wrote the image with a compute shader; the previous overlay (if any) with a fragment shader. Both
-      // must be visible before this pass's fragment stores.
-      VkImageMemoryBarrier before{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-      before.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-      before.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-      before.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      before.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      before.image = reinterpret_cast<VkImage>(target);
-      before.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      before.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-      before.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-      gt4_hw_vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &before);
-    }
+    record_base_copy(reinterpret_cast<VkImage>(target), width, height, first_tick);
     VkClearValue clear{};
     clear.depthStencil = {0.0f, 0};
     VkRenderPassBeginInfo pass{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
@@ -685,7 +846,7 @@ struct PresentLayer::Impl {
     }
     gt4_hwd_vkCmdEndRenderPass(command);
     {
-      // The next reader is the present copy or the dump readback (a transfer), or the next frame's compose (compute).
+      // The next reader is the present copy, the dump readback (a transfer) or the next tick's restore copy.
       VkImageMemoryBarrier after{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
       after.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
       after.newLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -694,7 +855,8 @@ struct PresentLayer::Impl {
       after.image = reinterpret_cast<VkImage>(target);
       after.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
       after.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-      after.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+      after.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT |
+                            VK_ACCESS_SHADER_WRITE_BIT;
       gt4_hw_vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                                   VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
                                   nullptr, 1, &after);
@@ -714,10 +876,49 @@ struct PresentLayer::Impl {
       return false;
     }
     destroy_target_view();
+    return true;
+  }
 
-    const std::uint64_t vertex_count = static_cast<std::uint64_t>(vertices.size());
-    gt4::coregs3::present::note_render(frame.vblank, static_cast<std::uint32_t>(ranges.size()), refused, unlit_draws,
-                                       vertex_count, unlit_vertices, vertex_count / 3u, lighting);
+  bool render(std::uint64_t target, std::uint32_t width, std::uint32_t height, const SubmitOverlay &submit,
+              std::string &error) {
+    if (!initialised) {
+      error = "the CoreGS 3.0 present layer is not initialised";
+      return false;
+    }
+    if (width == 0 || height == 0) return true;  // nothing to draw into
+    if (!has_frame) return true;                 // no captured frame yet
+    const gt4::coregs3::PresentationClock::Due batch = gt4::coregs3::present::due_ticks();
+    if (batch.count == 0) return true;  // no presentation instant due with the frame last noted
+    const gt4::coregs3::present::TimelineConfig &timeline = gt4::coregs3::present::timeline_config();
+    std::uint32_t first_tick = 0;
+    std::uint32_t tick_count = batch.count;
+    if (timeline.selected_tick != UINT32_MAX) {
+      // Diagnostic for image evidence: draw only the selected tick of this guest frame, over the saved base.
+      first_tick = std::min(timeline.selected_tick, batch.count - 1u);
+      tick_count = 1;
+    }
+    if (!ensure_depth(width, height, error)) return false;
+    if (!ensure_base_image(width, height, error)) return false;
+    bool drew_any = false;
+    for (std::uint32_t tick = first_tick; tick < first_tick + tick_count; ++tick) {
+      const std::uint64_t instant = batch.first + static_cast<std::uint64_t>(tick) * batch.step;
+      gt4::coregs3::present::interpolated_transforms(instant, transforms, /*count=*/false);
+      std::uint32_t refused = 0;
+      std::uint32_t unlit_draws = 0;
+      std::uint64_t unlit_vertices = 0;
+      gt4::coregs3::LightCounters lighting;
+      if (frame.draw_count == 0 ||
+          !build_frame(transforms.empty() ? nullptr : &transforms, refused, unlit_draws, unlit_vertices, lighting)) {
+        gt4::coregs3::present::note_pass_refused(refused);
+        continue;
+      }
+      if (!draw_tick(target, width, height, submit, !drew_any, error)) return false;
+      drew_any = true;
+      gt4::coregs3::present::note_draw_tick();
+      const std::uint64_t vertex_count = static_cast<std::uint64_t>(vertices.size());
+      gt4::coregs3::present::note_render(frame.vblank, static_cast<std::uint32_t>(ranges.size()), refused, unlit_draws,
+                                        vertex_count, unlit_vertices, vertex_count / 3u, lighting);
+    }
     return true;
   }
 };
@@ -760,11 +961,30 @@ bool PresentLayer::init(const PresentConfig &config, std::string &error) {
     s.shutdown();
     return false;
   }
-  std::fprintf(stderr, "[coregs3] present layer: R32_UINT storage image, D32 depth, depth clamp, vf24..vf27 push constant\n");
+  // The presentation timeline is configured by the hooks at startup; when they did not run (an unusual build order),
+  // parse the same variables here rather than defaulting silently.
+  if (!gt4::coregs3::present::timeline_configured()) {
+    gt4::coregs3::present::TimelineConfig timeline;
+    std::string config_error;
+    if (!gt4::coregs3::present::timeline_config_from_environment(timeline, config_error)) {
+      error = config_error;
+      s.shutdown();
+      return false;
+    }
+    gt4::coregs3::present::set_timeline_config(timeline);
+  }
+  const gt4::coregs3::present::TimelineConfig &timeline = gt4::coregs3::present::timeline_config();
+  std::fprintf(stderr,
+               "[coregs3] present layer: R32_UINT storage image, D32 depth, depth clamp, vf24..vf27 push constant, "
+               "%u Hz %s%s\n",
+               timeline.hz, gt4::coregs3::presentation_mode_name(timeline.mode),
+               timeline.selected_tick == UINT32_MAX ? "" : " (diagnostic: one tick per frame)");
   return true;
 }
 
 void PresentLayer::shutdown() { impl_->shutdown(); }
+
+bool PresentLayer::note_guest_frame(std::string &error) { return impl_->note_guest_frame(error); }
 
 bool PresentLayer::render(std::uint64_t target, std::uint32_t width, std::uint32_t height, const SubmitOverlay &submit,
                           std::string &error) {

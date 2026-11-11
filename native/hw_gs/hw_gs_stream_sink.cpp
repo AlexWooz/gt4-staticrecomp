@@ -589,6 +589,10 @@ void vsync_now(bool odd_field) {
   hw.set_age_targets(!hold);
   hw.flush();
   hw.next_frame();  // one guest frame per VBlank, windowed or headless (the session line's `frames`)
+  // TASK-090 live timeline: record this VBlank's captured frame in the presentation timeline and advance its clock,
+  // whether or not a picture is drawn this frame (a headless run samples every guest state too). No-op unless
+  // GT4_COREGS3=present.
+  hw.coregs3_guest_frame();
   if (hw.has_window() && !hold) {
     // Without a thread to show pictures from (hw_gs_backend.cpp, present_paced; the rendering queue path) the wait is here, and holds
     // up the next picture. So it leaves room, or waiting would raise the mean interval it waits for: it locked at 20 frames per second.

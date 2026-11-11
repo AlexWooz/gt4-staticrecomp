@@ -437,6 +437,15 @@ struct Backend::Impl {
 
   // Draws the newest complete captured car pass over a composed display image, once per frame, on the rendering queue.
   // A Vulkan failure disables the layer and never the game: `present` is a diagnostic, not the faithful path.
+  void coregs3_guest_frame() {
+    if (!coregs3_present) return;
+    std::string error;
+    if (!coregs3_present->note_guest_frame(error)) {
+      std::fprintf(stderr, "[coregs3] present timeline stopped: %s\n", error.c_str());
+      coregs3_present.reset();
+    }
+  }
+
   void overlay_coregs3(VkImage image, std::uint32_t width, std::uint32_t height) {
     if (!coregs3_present || image == VK_NULL_HANDLE) return;
     if (coregs3_overlay_flush == stats.flushes) return;  // the window path already drew it for this frame
@@ -1975,6 +1984,8 @@ void Backend::coregs3_snapshot(std::uint32_t kind, std::uint32_t pass, std::uint
 }
 
 void Backend::next_frame() { impl_->stats.frames++; }
+
+void Backend::coregs3_guest_frame() { impl_->coregs3_guest_frame(); }
 
 void Backend::set_display_field(bool odd) {
   if (impl_->renderer) impl_->renderer->SetDisplayField(odd);
