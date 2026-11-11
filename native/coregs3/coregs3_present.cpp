@@ -41,7 +41,20 @@ struct TimelineState {
   InterpolationLimits limits;
   HostPresentationClock host_clock{60};
   HostPresentationClock::Plan host_plan;
+  // TASK-090 crash-race diagnostic: the per-instant counter pass (removed by commit 6fc9f75b), restored behind
+  // GT4_COREGS3_DRY_PASS=1 so the crash it exposes can be reproduced and measured.
+  std::vector<DrawTransform> dry_transforms;
 };
+
+// TASK-090 crash-race diagnostic: the removed per-VBlank counter pass, opt-in. It runs the interpolation of every due
+// presentation instant on the GS worker (no drawing) and is what reproduces the exit-139 fault at VBlank ~6783.
+bool dry_pass_enabled() noexcept {
+  static const bool enabled = [] {
+    const char *value = std::getenv("GT4_COREGS3_DRY_PASS");
+    return value != nullptr && *value != '\0' && std::strcmp(value, "0") != 0;
+  }();
+  return enabled;
+}
 
 std::int64_t steady_now_ns() noexcept {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
@@ -175,6 +188,13 @@ void note_guest_frame(const FrameSnapshot &frame) {
     if (state.batch.count > 1)
       for (std::uint32_t index = 1; index < state.batch.count; ++index) add_interval(state.batch.step);
     g_interval_last.store(state.batch.first + (state.batch.count - 1) * state.batch.step, std::memory_order_relaxed);
+  }
+  // TASK-090 crash-race diagnostic: the per-instant counter pass of commit 6fc9f75b, opt-in. See dry_pass_enabled.
+  if (dry_pass_enabled()) {
+    for (std::uint32_t index = 0; index < state.batch.count; ++index) {
+      const std::uint64_t instant = state.batch.first + static_cast<std::uint64_t>(index) * state.batch.step;
+      interpolated_transforms(instant, state.dry_transforms, true);
+    }
   }
   // TASK-090 host clock: the host presentation times of this batch on the display grid (coregs3_host_clock.hpp; a
   // window presenting at the requested rate uses them, a headless run only reports the counters).

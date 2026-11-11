@@ -363,10 +363,62 @@ void check_frame_interpolation() {
   require(out[0].source == TransformSource::captured_newer, "a refused pair draws the newest matrices");
 }
 
+// A draw list that grows between the two frames: an older object can match a newer object whose index is beyond the
+// older list's length. The pairing bookkeeping is indexed by the newer frame's positions, so it must be sized by the
+// newer list; sized by the older one it reads and writes past its end (the TASK-090 crash-race heap overflow).
+void check_growing_draw_list() {
+  float identity_matrix[16], moved[16];
+  identity(identity_matrix);
+  translation(2.0f, 0.0f, 0.0f, moved);
+
+  ObjectTransform older_a, older_b, newer_new, newer_a, newer_b;
+  older_a.key = key_of(0xA1);
+  std::memcpy(older_a.matrix, identity_matrix, sizeof older_a.matrix);
+  older_b.key = key_of(0xB2);
+  std::memcpy(older_b.matrix, identity_matrix, sizeof older_b.matrix);
+  newer_new.key = key_of(0xC3);
+  std::memcpy(newer_new.matrix, identity_matrix, sizeof newer_new.matrix);
+  newer_a.key = key_of(0xA1);
+  std::memcpy(newer_a.matrix, moved, sizeof newer_a.matrix);
+  newer_b.key = key_of(0xB2);
+  std::memcpy(newer_b.matrix, moved, sizeof newer_b.matrix);
+
+  const TimelineFrame older_frame = make_timeline(200, {older_a, older_b});
+  const TimelineFrame newer_frame = make_timeline(201, {newer_new, newer_a, newer_b});
+  const CameraFrame camera = make_camera(identity_matrix, identity_matrix);
+  InterpolationLimits limits;
+  std::vector<DrawTransform> out;
+  InterpolationCounters counters;
+
+  interpolate_frame(older_frame, camera, newer_frame, camera, 0.5f, limits, out, counters);
+  require(out.size() == 3, "one transform per object of the newest frame, including the new one");
+  require(counters.pairs == 1 && counters.pairs_refused == 0, "the pair is usable");
+  require(counters.paired == 2 && counters.only_newer == 1 && counters.only_older == 0,
+          "both older objects match newer objects beyond the older list's length");
+  require(out[0].key.id == 0xC3 && out[0].source == TransformSource::captured_newer,
+          "the object only in the newest frame keeps its captured matrix");
+  require(out[1].key.id == 0xA1 && out[1].source == TransformSource::interpolated &&
+              near(out[1].matrix[3], 1.0f),
+          "the first older object matches at newer index 1");
+  require(out[2].key.id == 0xB2 && out[2].source == TransformSource::interpolated &&
+              near(out[2].matrix[3], 1.0f),
+          "the second older object matches at newer index 2, past the older list's end");
+
+  // The same shape with the older list empty: nothing pairs, every newer object is only-newer, and the pairing pass
+  // walks no older objects (the bookkeeping still has to be sized for the newer list).
+  const TimelineFrame empty_older = make_timeline(200, {});
+  out.clear();
+  counters = InterpolationCounters{};
+  interpolate_frame(empty_older, camera, newer_frame, camera, 0.5f, limits, out, counters);
+  require(out.size() == 3 && counters.paired == 0 && counters.only_newer == 3 && counters.only_older == 0,
+          "an empty older frame leaves every newest object unmatched");
+}
+
 }  // namespace
 
 int main() {
   try {
+    check_growing_draw_list();  // first: it is the only check that touches heap bookkeeping past a small allocation
     check_guest_time_and_rates();
     check_clock();
     check_camera_frame();

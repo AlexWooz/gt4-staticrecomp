@@ -989,7 +989,8 @@ endif()
 # unchanged with `main` renamed, and game_main.cpp calls it: with an ELF argument exactly as before, without one (a double click)
 # after the standalone rules of standalone.cpp built the command line and environment the launcher would have passed.
 set_source_files_properties("${PORT}/main.cpp" PROPERTIES COMPILE_DEFINITIONS "main=gt4_donor_main")
-add_executable(gt4vulkan "${PORT}/main.cpp" game_main.cpp standalone.cpp window.cpp ${GT4VULKAN_RESOURCES})
+add_executable(gt4vulkan "${PORT}/main.cpp" game_main.cpp standalone.cpp window.cpp crash_dump.cpp
+               ${GT4VULKAN_RESOURCES})
 # TASK-159: the host side of the call that scripts/camera360_units.py adds to the translated chase camera. An EE library built
 # from those units needs it; one built from the plain units leaves it unused.
 target_sources(gt4vulkan PRIVATE camera_360_hook.cpp fov_adjust_hook.cpp)
