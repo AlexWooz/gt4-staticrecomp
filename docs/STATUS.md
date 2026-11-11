@@ -1,5 +1,32 @@
 # Current Status
 
+## 2026-11-11: normal-race HUD census, tachometer and the fair 3x comparison (TASK-090, branch `task/090-hud-aspec`)
+
+The HUD is measured on a **normal A-Spec race** now, not only on the B-Spec night scene: `scripts/coregs2_bench/
+aspec-run.sh` starts the night race without the Director's Mode selection, and the scene frames 7600-7607 were captured
+at 3x with `.gt4scene`, `.gt4tap`, `.gt4gs` (32,453,920 B, 8/8 frames, 0 refused) and the v2 `.gt4vram` (56,995,408 B;
+the S3 recipe's 64-record bound was too small and was raised). A new `gt4_coregs3_render --hud-census` enumerates the
+panel pass: 55 PATH2 sprites and 42 PATH1 display-buffer draws; position/lap 7, lap/time 24, minimap 8, message 12,
+gear 2, digital speed 3, **tachometer 9** (dial 0x3DE0 130x100 + eight untextured needle strips), **speedometer 8**
+(dial 0x3DA0 + seven strips), gauge background 1 and the G-force bar 9 all decode; the **trip odometer** (page 0x3D60,
+palette-only upload) and the **fuel/tyre widget** (off-screen page 499, composite outside the panel) are refused by
+name. The **tachometer is implemented**: `--hud-element tach` selects the right 130x100 T4 dial and the strips of its
+VU1 job, and a new untextured Gouraud triangle-strip raster (GS 1/16 subpixel, top-left rule, interpolated RGBA, the
+measured `(Cs-Cd)*FIX+Cd` blend, ATE/CT16) draws the needle. Two texture rules came out of the scene: a constant page
+uploaded by the captured stream as T4/T8 texels is real content (the gear box and map dot), and the GT4F atlas applies
+at rotated pages (the A-Spec digits sample the GT4meter page at 0x3E40). `--hud-element all` draws every supported
+panel entry over the world, and the HUD raster maps the captured 640x448 canvas to any output (TASK-214), so the
+owner's fair **3x-vs-3x** comparison is a true 3x render: on the contribution mask (alpha > 0) the tach is **1x PSNR
+22.01 / SSIM 0.787 / mean 11.39** (851 px) and **3x 19.22 / 0.644 / 15.55** (7,800 px); the full HUD is **1x 20.59 /
+0.712 / 11.87** (30,671 px) and **3x 17.31 / 0.635 / 18.29** (276,604 px), with the dial/needle positions and the
+needle angle matching the reference. Residuals: the native world behind the translucent HUD is brighter (the S2
+material gap), the trip-odometer page and the fuel/tyre composite are not in the captured panel, the Best/Last Lap
+labels sit in the pre-present overlay, and the minimap page keeps a palette-bank residual (magenta bands). Gates:
+CTest coregs3 **19/19** (new HUD/decode cases), Python **17/17**, the night speed element and both `--no-hud` renders
+**byte-identical** to the `4345bcbd` tool (`425D66A6...` / `9D273FBB...` / `F506F179...`), 3x off/shadow
+**COREGS3-NIGHT-CHECK-OK** (8,997 VBlanks, 1,686 racing, 0 differences, 13/13 frames). Evidence
+`build/evidence-hud-aspec/`; method in [COREGS3-GSSTREAM-CAPTURE](COREGS3-GSSTREAM-CAPTURE.md).
+
 ## 2026-11-11: the dry-pass crash was a host heap overflow in the CoreGS 3.0 timeline pairing (TASK-090 crash race, branch `task/090-crash-race`)
 
 The host-clock round's crash lead is closed with a different conclusion. `GT4_COREGS3_DRY_PASS=1` (the removed

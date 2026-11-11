@@ -30,6 +30,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -40,8 +41,10 @@
 
 namespace gt4::coregs3 {
 
-// The elements S3 implements. The speed element is the only one whose PATH1+PATH2 set is measured end to end.
-enum class HudElement : std::uint32_t { speed = 0 };
+// The elements S3 implements. `speed` is the measured night B-Spec speed plate and digits; `tach` is the A-Spec
+// tachometer (the right gauge's dial plate and its untextured triangle-strip needle); `all` is the census-driven mode
+// that draws every panel entry the raster supports.
+enum class HudElement : std::uint32_t { speed = 0, tach = 1, all = 2 };
 bool parse_hud_element(const std::string &name, HudElement &element);
 const char *hud_element_name(HudElement element) noexcept;
 
@@ -109,9 +112,14 @@ struct HudDraw {
   std::uint32_t sequence = 0;  // PATH2: the batch's capture sequence; PATH1: the tap record ordinal
   HudDrawState state;
   std::uint32_t vertices = 0;
-  HudVertex verts[4];
+  HudVertex verts[8];
   bool normalized_uv = false;  // PATH1 plates carry ST, PATH2 sprites texel UV
-  bool triangle_strip = false;  // PATH1: a 4-vertex tri-strip quad
+  bool triangle_strip = false;  // PATH1: an axis-aligned 4-vertex tri-strip quad
+  // TASK-090 HUD A-Spec: an untextured Gouraud triangle strip (the tachometer/speedometer needles). The vertex
+  // colours interpolate like PRIM.IIP, ATE/blend use the captured state, and `drawing == false` vertices (ADC) break
+  // the strip as the GS does. The raster covers pixel centres inside each triangle with the top-left fill rule, so the
+  // shared edge of the two triangles is written once.
+  bool untextured_strip = false;
   float min_x = 0.0f, max_x = 0.0f, min_y = 0.0f, max_y = 0.0f;
 };
 
@@ -123,6 +131,7 @@ struct HudPanelCounters {
   std::uint64_t path1_draws = 0;             // tap draws into the display buffer
   std::uint64_t path1_selected = 0;          // the plate quad(s) of the element
   std::uint64_t path1_other = 0;
+  std::uint64_t path1_needles = 0;           // untextured triangle-strip gauge needles selected
   std::uint64_t plate_quads = 0;
   std::uint64_t refusals = 0;
   std::map<std::string, std::uint64_t> reasons;  // every named refusal/counter
@@ -145,6 +154,38 @@ struct HudPanel {
 bool build_hud_panel(const std::vector<GsDecodeBatch> &batches, const std::vector<std::uint8_t> &tap_data,
                      const std::vector<TapFileRecord> &tap_records, std::uint64_t scene_vblank, HudElement element,
                      HudPanel &panel, std::string &error);
+
+// ---- The panel census (TASK-090 HUD A-Spec) ----
+//
+// `build_hud_panel` selects one element by its measured placement. The census instead enumerates every draw of the
+// panel pass of one stream: the PATH2 sprites between the present blit and the next full-screen batch, and the PATH1
+// draws of the tap that write the CT16 display buffer inside the stream's job range. Each entry carries the captured
+// register state and geometry, so the caller can classify the HUD elements (position/lap, times, tachometer, speed,
+// gear, messages, fuel/tyres) and run each entry's texture through the same HudTextureCache the renderer uses.
+struct HudCensusEntry {
+  bool path1 = false;
+  std::uint64_t job = 0;
+  std::uint32_t sequence = 0;  // PATH2: the batch sequence; PATH1: the tap record ordinal
+  HudDrawState state;
+  std::uint32_t vertices = 0;
+  float min_x = 0.0f, max_x = 0.0f, min_y = 0.0f, max_y = 0.0f;
+  bool axis_aligned = false;  // a top-left/bottom-right sprite pair or the measured axis-aligned plate quad
+  bool drawing = true;        // at least one drawing vertex
+};
+
+struct HudCensus {
+  std::uint64_t stream_vblank = 0;
+  std::vector<HudCensusEntry> entries;
+  std::uint64_t path2_batches = 0;      // every PATH2 batch between the present blit and the trailing clear
+  std::uint64_t path2_drawing = 0;      // of those, the batches with a drawing vertex
+  std::uint64_t path1_display_draws = 0;  // tap draws into the CT16 display buffer
+  std::uint64_t path1_axis_aligned = 0;   // of those, the measured axis-aligned quad form
+  std::map<std::string, std::uint64_t> reasons;
+};
+
+bool build_hud_census(const std::vector<GsDecodeBatch> &batches, const std::vector<std::uint8_t> &tap_data,
+                      const std::vector<TapFileRecord> &tap_records, std::uint64_t stream_vblank,
+                      HudCensus &census, std::string &error);
 
 // ---- Textures ----
 
@@ -201,9 +242,12 @@ struct HudFontAtlas {
 // TBW 2, TW 7, TH 6, page size 8192 and the 0..127 x 0..38 CLAMP region.
 bool parse_hud_font_atlas(const std::vector<std::uint8_t> &bytes, HudFontAtlas &atlas, std::string &error);
 
-// Writes the page into `slm` at its TBP0, covers its 32 blocks and preserves the 16-entry (64-byte) CSM1 palette bank
-// at `palette_cbp` for a T4 draw with CSA 0. A page that does not fit the 4 MiB image is refused.
-bool apply_hud_font_atlas(const HudFontAtlas &atlas, SlmImage &slm, std::uint32_t palette_cbp, std::string &error);
+// Writes the page into `slm` at `target_tbp0` (the draw's TBP0; the GT4meter page rotates through VRAM, so the A-Spec
+// gear/speed digits sample it at another page than the night capture's), covers its 32 blocks as texel content and
+// preserves the 16-entry (64-byte) CSM1 palette bank at `palette_cbp` for a T4 draw with CSA 0. A page that does not
+// fit the 4 MiB image is refused.
+bool apply_hud_font_atlas(const HudFontAtlas &atlas, SlmImage &slm, std::uint32_t target_tbp0,
+                          std::uint32_t palette_cbp, std::string &error);
 
 enum class HudTextureStatus : std::uint32_t {
   ok = 0,
@@ -227,13 +271,11 @@ const char *hud_texture_status_name(HudTextureStatus status) noexcept;
 class HudTextureCache {
  public:
   explicit HudTextureCache(const SlmImage &slm) : slm_(slm) {}
-  // Marks the TBP0 of a page supplied by a font atlas sidecar. Only that page may be RGB-constant with varying alpha:
-  // the measured GT4meter palette is white, so its glyphs differ only in the alpha lane. Every other page keeps the S3
-  // constant check (RGB): a stream-only font page holds the palette bundle's bytes as indices, all of them white.
-  void set_font_atlas_page(std::uint32_t tbp0) noexcept {
-    font_atlas_page_ = tbp0;
-    has_font_atlas_page_ = true;
-  }
+  // Marks a TBP0 of a page a GT4F font atlas supplied. The page is judged on RGBA (the measured GT4meter palette is
+  // white, so its glyphs differ only in the alpha lane); every page without an atlas and without a captured T4/T8
+  // texel upload keeps the S3 RGB constant-page refusal (a stream-only font page holds the palette bundle's bytes as
+  // indices, all of them white).
+  void set_font_atlas_page(std::uint32_t tbp0) { font_atlas_pages_.insert(tbp0); }
   const HudTexture &get(const HudDrawState &state, std::string &error);
   std::uint64_t decodes() const noexcept { return decodes_; }
   std::uint64_t cache_hits() const noexcept { return cache_hits_; }
@@ -244,8 +286,7 @@ class HudTextureCache {
   const SlmImage &slm_;
   std::map<std::tuple<std::uint64_t, std::uint64_t, std::uint64_t>, HudTexture> cache_;
   std::uint64_t decodes_ = 0, cache_hits_ = 0, refusals_ = 0;
-  std::uint32_t font_atlas_page_ = 0;
-  bool has_font_atlas_page_ = false;
+  std::set<std::uint32_t> font_atlas_pages_;  // every page a GT4F atlas supplied (the page rotates through VRAM)
   std::map<std::string, std::uint64_t> reasons_;
 };
 
@@ -255,6 +296,15 @@ struct HudDrawOptions {
   // The display buffer is CT16: the destination is read as its 5-bit value shifted left by 3 (the reference frame's
   // own expansion, measured on the r8 scanout) and the result is stored the same way.
   bool ct16 = true;
+  // TASK-090 HUD A-Spec (TASK-214): the 2D canvas the captured element coordinates live in, in scanout pixels. The
+  // panel of the captured night race is the game's 640x448 scanout; the output may be any size, and every target pixel
+  // centre is mapped back to this canvas (`(p + 0.5) * canvas / target - 0.5`) before coverage, scissor and UV
+  // interpolation. At 640x448 the mapping is the identity (the S3 measured case); at 1920x1344 it is the 3x validation
+  // scale the CoreGS 2.0 reference dumps use. The fields are the parameterisation TASK-214 needs: a future 16:9/21:9
+  // output keeps the game's own canvas coordinates (XYOFFSET and the HUD anchor rules of TASK-079/080) and changes
+  // only this mapping, never the captured draw geometry.
+  std::uint32_t canvas_width = 640;
+  std::uint32_t canvas_height = 448;
 };
 
 struct HudDrawCounters {
@@ -269,11 +319,13 @@ struct HudDrawCounters {
 };
 
 // Composites the panel over `rgba` (RGBA8, `width` x `height`, the native 640x448 scanout). `mask` receives 255 at
-// every pixel a panel draw wrote. Returns false with `error` only for an invalid target or an unhandled primitive; a
-// per-draw refusal is counted.
+// every pixel a panel draw wrote; `contrib_mask` (optional) receives 255 only where the fragment's alpha is above zero,
+// i.e. the pixels the element actually contributes to over the world (the fair A-Spec comparison mask). Returns false
+// with `error` only for an invalid target or an unhandled primitive; a per-draw refusal is counted.
 bool draw_hud_panel(const HudPanel &panel, HudTextureCache &textures, std::vector<std::uint8_t> &rgba,
                     std::uint32_t width, std::uint32_t height, const HudDrawOptions &options,
-                    std::vector<std::uint8_t> *mask, HudDrawCounters &counters, std::string &error);
+                    std::vector<std::uint8_t> *mask, HudDrawCounters &counters, std::string &error,
+                    std::vector<std::uint8_t> *contrib_mask = nullptr);
 
 // The measured reference expansion of a CT16 scanout value (5 bits stored, the reference's `<< 3`).
 std::uint8_t ct16_expand(std::uint8_t value8) noexcept;

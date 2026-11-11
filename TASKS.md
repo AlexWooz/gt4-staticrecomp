@@ -2067,7 +2067,6 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   0x00482674), so the old concurrent-gate attribution is superseded; the delivered host clock path does not fault on
   those VBlanks. Owner window test at 1x pending. Evidence `build/evidence-host-clock/`.
 
-<<<<<<< HEAD
 - **HUD font atlas (2026-11-11, branch `task/090-hud-font`):** the S3 speed digits render. `coregs3_hud` gains the
   GT4F font atlas sidecar (`parse_hud_font_atlas`/`apply_hud_font_atlas`: the 8,192-byte GT4meter T4 page at TBP0
   0x3A20, 32 blocks, the frame's captured 16-entry CSM1 bank at CBP 0x3A27 preserved) and `gt4_coregs3_render
@@ -2111,11 +2110,6 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   controls). The per-page spread is still outside the study's +/-0.1 (world ratios 0.646..1.126 excluding the known
   content outliers, median 0.912), named per page in WORLD-MATERIALS-V2. Evidence `build/evidence-texture-mip/`.
 
-- Next: the live world present (in progress); a recapture with the mip windows so the road's level-1 chain is
-  carried, and the per-material level spread (pages 0x3721/0x37B5/0x3E47); the remaining HUD elements (gear
-  ladder, total time, clock) whose pages are not sampled in the captured frame; VRR presentation and the HUD at
-  the variable rate; the effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
-=======
 - **Crash race (2026-11-11, branch `task/090-crash-race`):** the host-clock crash lead is closed. The exit-139 fault at
   VBlank ~6783 is on the **GS worker**, inside CoreGS 2.0's containers (`ContentKey`'s `blockLists_` rehash in two runs,
   `TrimTexturePool`'s `texturePool_` walk in a third), each loading a node link of 0xFFFFFFFFFFFFFFFF; the host-clock
@@ -2130,10 +2124,36 @@ open. State, hook table, capture format and the first measurements: [COREGS3-HOO
   **COREGS3-NIGHT-CHECK-OK**, CTest coregs3 **19/19**, Python **15/15**. Evidence `build/evidence-crash-race/`; method:
   [COREGS3-HOOKS](docs/COREGS3-HOOKS.md) §30.
 
-- Next: the material transfer-curve residual (fixes 3/4: palette/texel inversion and the MXL 1/MMIN 4 mip
-  path); capture the font atlas and the remaining HUD elements; the owner's 1x window test of the host presentation
-  clock; the effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
->>>>>>> task/090-crash-race
+- **HUD A-Spec round (2026-11-11, branch `task/090-hud-aspec`):** the normal-race HUD census and the tachometer.
+  `scripts/coregs2_bench/aspec-run.sh` starts the reference night race in A-Spec (the press list without the Director's
+  Mode step; the only v2.00 A-Spec bench available) and scene frames 7600-7607 were captured at 3x with
+  `.gt4scene`/`.gt4tap`/`.gt4gs` (32,453,920 B, 8/8 frames, 0 refused) and the v2 `.gt4vram` (56,995,408 B; the S3
+  64-record bound was too small and was raised). `gt4_coregs3_render --hud-census` enumerates the panel pass: 55 PATH2
+  sprites + 42 PATH1 display-buffer draws; position/lap 7, lap/time 24, minimap 8, message 12, gear 2, digital speed 3,
+  **tachometer 9** (dial 0x3DE0 130x100 + 8 untextured needle strips), **speedometer 8** (0x3DA0 + 7 strips), gauge
+  background 1 and the G-force bar 9 decode; the **trip odometer** (page 0x3D60 uploaded only as its CT32 palette) and
+  the **fuel/tyre widget** (off-screen page 499, composite outside the panel) are refused by name. The tachometer is
+  implemented: `--hud-element tach` selects the right 130x100 T4 dial and the needle strips of its VU1 job, with a new
+  untextured Gouraud triangle-strip raster (1/16 subpixel, top-left rule, interpolated RGBA, `(Cs-Cd)*FIX+Cd` FIX 21,
+  ATE/CT16). New texture rules: a constant page uploaded by the stream as T4/T8 texels is real content
+  (`SlmImage::texel_covered`, the gear box and map dot), and the GT4F atlas applies at rotated pages
+  (`apply_hud_font_atlas(..., target_tbp0, ...)`; the A-Spec digits sample the GT4meter page at 0x3E40). The HUD raster
+  maps the captured 640x448 canvas to any output (TASK-214), so `--hud-element all` at 1920x1344 is a true 3x render:
+  on the alpha>0 contribution mask the tach is 1x PSNR 22.01 / SSIM 0.787 / mean 11.39 (851 px), 3x 19.22 / 0.644 /
+  15.55 (7,800 px); the full HUD is 1x 20.59 / 0.712 / 11.87 (30,671 px), 3x 17.31 / 0.635 / 18.29 (276,604 px), with
+  the dial/needle positions and needle angle matching. Gates: CTest coregs3 **19/19**, Python **17/17**, the night
+  speed element and both `--no-hud` renders **byte-identical** to `4345bcbd` (`425D66A6...`/`9D273FBB...`/
+  `F506F179...`), 3x off/shadow **COREGS3-NIGHT-CHECK-OK**. Residuals: world brightness behind the translucent HUD
+  (S2 material gap), trip-odometer page, fuel/tyre composite, Best/Last Lap labels in the pre-present overlay, minimap
+  palette-bank magenta bands, 1x texture pages at 3x. Evidence `build/evidence-hud-aspec/`.
+
+- Next: the live world present (in progress, the world is drawn live over the base frame); a recapture with
+  the mip windows so the road's level-1 chain is carried, and the per-material level spread (pages
+  0x3721/0x37B5/0x3E47); the remaining HUD elements (trip-odometer page 0x3D60, the fuel/tyre composite, the
+  Best/Last Lap labels of the pre-present overlay and the minimap palette-bank residual), the HUD anchored per
+  aspect in the game's own canvas (TASK-214, 16:9/21:9 anchors from TASK-079/080); VRR presentation and the
+  HUD at the variable rate; the effects/HUD capture additions; then the G-IMAGE/G-PERF gates.
+
 
 
 ### TASK-087 — GS readbacks without stalls

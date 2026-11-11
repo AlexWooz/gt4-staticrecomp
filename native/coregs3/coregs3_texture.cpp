@@ -469,6 +469,23 @@ void SlmImage::cover(const vram::Window &window) {
   covered.push_back(window);
 }
 
+bool SlmImage::covers_texels(std::uint32_t block) const {
+  block &= vram::kBlocksTotal - 1u;
+  for (const vram::Window &window : texel_covered)
+    if (block >= window.first_block && block - window.first_block < window.block_count) return true;
+  return false;
+}
+
+void SlmImage::cover_texels(const vram::Window &window) {
+  for (vram::Window &existing : texel_covered) {
+    if (existing.first_block == window.first_block) {
+      if (window.block_count > existing.block_count) existing.block_count = window.block_count;
+      return;
+    }
+  }
+  texel_covered.push_back(window);
+}
+
 bool parse_vram_sidecar(const std::uint8_t *data, std::size_t size, std::vector<VramRecord> &records,
                         std::string &error) {
   records.clear();
