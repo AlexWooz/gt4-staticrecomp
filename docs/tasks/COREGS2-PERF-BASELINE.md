@@ -267,25 +267,42 @@ Arcade card (`spec2-run.sh`) and a recording (`build/bench-inputs-215/<name>.txt
 Ford GT George V Paris replay (Spec II, VBlanks 20,400-21,300) is the reference replay; the streamer's rc14 logs stay
 historical hypotheses only and nothing waits on them.
 
-**Blocked on the Spec II boot path (2026-11-11):** Spec II does not boot on this base here, so no schedule or baseline was
-produced.
+**Resolved (2026-11-11): it was the target, not the ISO.** `build/perf-base` is a **v2.00 target** build
+(`GT4_EE_PROFILE=production`, no `GT4_TARGET=spec2`); running it with the Spec II ELF is what looped on
+`[sys] unhandled syscall 0x83`. A Spec II target build (below) boots Spec II and runs the Arcade scenes. The pinned inputs
+are the ones already in the tree: the derived ELF matches `docs/inputs/spec2-elf.json` exactly (`36F60B1A...`), the Arcade
+card is the pinned menu-pilot card, and the ISO used is the PT-BR image (its own hash `FE8B51CF...`, not the pin's
+`6a3484B9...`, which the earlier Spec II runs also used).
 
-- Inputs exist: the Arcade card (`private/slice110-menu-pilot/name-control4/card.ps2`, 8,650,752 bytes, SHA-256
-  `BB10A96F...`), the derived ELF (`private/slice272-spec2-elf/SCUS_974.36`, 6,520,944 bytes, 2026-10-22) and the ISO
-  (`Gran Turismo 4 Spec II v1.10 (PTBR).iso`, 3,695,083,520 bytes).
-- Symptom, from both the canonical `spec2-run.sh` harness and a direct launch: the runtime prints its feature banners, then
-  loops on `[sys] unhandled syscall 0x83 from 0x005B740C`; **no VBlank is reached** (a 150 s capped probe wrote 1.96 GB of
-  that line and never passed VBlank 10,400; two earlier attempts spun for ~70 min at 100 % CPU).
-- The card is not the cause: identical loop with a valid 8.3 MB card and with a 0-byte one.
-- Not caused by this branch's renderer work: every change is an env-gated diagnostic or counter, none touches the EE or
-  IOP. **Root cause: Unknown** - the derived Spec II ELF predates rc15 and there is no local previous Spec II run to
-  compare against, so a stale derived ELF (or its IOP side) is the first hypothesis.
-- **Operational:** the C: drive was at 0.0 GB free (930 GB disk, 771 GB in the trees above). A full disk silently produced a
-  0-byte card and multi-GB logs; runs with frame dumps need >~2 GB. This worktree's reproducible frame dumps were deleted
-  (1.7 GB recovered); logs and CSVs stay.
+**Spec II build (this worktree, `build/spec2-215`):** `-DGT4_TARGET=spec2 -DGT4_EE_PROFILE=spec2`, capsules
+`slice276-spec2-iop-runtime` (receipt `972ADAA9...`, matches `docs/inputs/slice276-spec2-iop-runtime.json`) and
+`slice277-license-guard-runtime`, the Spec II EE library `slice278-spec2-ee-producer` (pinned by
+`docs/inputs/spec2-ee-libraries.json`), and the same VU1/VU0/port/shader pins as the v2.00 build. Binary
+`build/spec2-215/gt4vulkan-spec2.exe`.
 
-**To unblock:** re-derive the Spec II runtime pieces against the current base, then read the track-list positions from
-frames at VBlanks 10,600-13,000 (`EVERY=150`) and build the four schedules - not from guesses.
+**Arcade schedules (in `scripts/coregs2_bench/spec2-run.sh`, mapped from the screens, not guessed):** the Single Race
+category screen at VBlank 10,600 is a 2x2 selector - **Circuitos Mundiais** (World, 20), **Circuitos Originais** (13),
+**Circuitos Urbanos** (City, 12), **Neve & Cascalho** (7) - and the track strip of the chosen quadrant is walked with
+`right` presses:
+
+| scene | quadrant | rights | track | validated |
+|---|---|---|---|---|
+| `opera` | City (`down`) | 2 | Paris Opera | **yes**, race at VBlank 21,000 (position 6, lap 1/2) |
+| `ssr5` | City (`down`) | 8 | S.S. Route 5 | **yes**, night race at 21,000 (position 6, 87 mph) |
+| `george-rally` | City (`down`) | 1 | George V Paris (the Paris rally track) | **yes**, night rally at 21,000 (position 2, 83 mph) |
+| `tsukuba-wet` | World (no `down`) | 3 | Tsukuba Molhado | **no** - see below |
+
+City strip order (measured): Amalfi 0, George V 1, Paris Opera 2, Hong Kong 3, Citta di Aria 4, New York 5, Tokyo R246 6,
+Cote d'Azur 7, S.S. Route 5 8, C.S. Route 5 9 (the existing `night` scene). World order: Nurburgring 0, Laguna Seca 1,
+Tsukuba 2, **Tsukuba Molhado 3**, FISCO '90s 4.
+
+**Tsukuba Wet still open:** the World-circuits car strip starts on the **Ford Model T Tourer '15**, and Single Race
+refuses it with the on-screen dialog "Esse carro nao pode ser pilotado no modo Corrida Unica" (frame at VBlank 21,000).
+Two rights at 15,600/15,800 did not move the strip (it is not focused yet at those VBlanks - the track load shifts the
+screen later than in the city scenes), so the arm needs a later car-strip press; not guessed further this round.
+
+**To run them:** `bash scripts/coregs2_bench/spec2-run.sh <scene> <name> build/spec2-215/gt4vulkan-spec2.exe`
+(no `WINDOW` for headless). The George V reference replay stays the existing `george` scene (VBlanks 20,400-21,300).
 
 
 ## S4 mapping: the four words are per sprite (not per vertex)

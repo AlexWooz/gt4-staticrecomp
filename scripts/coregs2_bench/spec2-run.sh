@@ -32,6 +32,40 @@ case "$scene" in
     for frame in 15600 15800 16000 16200 16400; do P="$P $frame:right:10"; done
     P="$P 17000:cross:30 17800:cross:30 18600:cross:30 19400:cross:30 20200:cross:30 21000:cross:7000 21050:left:200"
     ;;
+  # TASK-215: the streamer's scenes, mapped on 2026-11-11 from the Spec II Arcade screens (the 2x2 category
+  # selector at VBlank 10,600 with its four quadrants, then the track strip of that category):
+  #   City Courses   (down once, cross): Amalfi 0, George V 1, Paris Opera 2, Hong Kong 3, Citta di Aria 4,
+  #                                      New York 5, Tokyo R246 6, Cote d'Azur 7, S.S. Route 5 8, C.S. Route 5 9 ...
+  #   World Circuits (cross only):       Nurburgring 0, Laguna Seca 1, Tsukuba 2, Tsukuba Molhado 3, FISCO '90s 4 ...
+  # George V is the Paris rally track (its preview reads "RALLY GEORGE V PARIS"), so "George Paris Rally" and the
+  # George V reference replay are the same track.
+  opera|paris-opera)  # Paris Opera (city, index 2)
+    P="$boot 10600:down:10 10800:cross:30"
+    for frame in 11200 11400; do P="$P $frame:right:10"; done
+    P="$P 13000:cross:30 13800:cross:30 14400:cross:30 15000:cross:30"
+    for frame in 15600 15800 16000 16200 16400; do P="$P $frame:right:10"; done
+    P="$P 17000:cross:30 17800:cross:30 18600:cross:30 19400:cross:2600"
+    ;;
+  ssr5)  # S.S. Route 5 (city, index 8)
+    P="$boot 10600:down:10 10800:cross:30"
+    for frame in 11200 11400 11600 11800 12000 12200 12400 12600; do P="$P $frame:right:10"; done
+    P="$P 13000:cross:30 13800:cross:30 14400:cross:30 15000:cross:30"
+    for frame in 15600 15800 16000 16200 16400; do P="$P $frame:right:10"; done
+    P="$P 17000:cross:30 17800:cross:30 18600:cross:30 19400:cross:2600"
+    ;;
+  tsukuba-wet)  # Tsukuba Molhado (world circuits, index 3; the default quadrant, no down)
+    P="$boot 10800:cross:30"
+    for frame in 11200 11400 11600; do P="$P $frame:right:10"; done
+    # The world-circuits car list starts on the Ford Model T (not raciable in Single Race): two rights reach a normal
+    # car, then the crosses confirm it.
+    P="$P 13000:cross:30 13800:cross:30 14400:cross:30 15000:cross:30 15600:right:10 15800:right:10 17000:cross:30 17800:cross:30 18600:cross:30 19400:cross:2600"
+    ;;
+  george-rally)  # George V Paris (the Paris rally track, city index 1; the reference replay's track)
+    P="$boot 10600:down:10 10800:cross:30 11200:right:10"
+    P="$P 13000:cross:30 13800:cross:30 14400:cross:30 15000:cross:30"
+    for frame in 15600 15800 16000 16200 16400; do P="$P $frame:right:10"; done
+    P="$P 17000:cross:30 17800:cross:30 18600:cross:30 19400:cross:2600"
+    ;;
   *) echo "unknown scene $scene"; exit 2 ;;
 esac
 args=(); for p in $P; do args+=(--press "$p"); done
