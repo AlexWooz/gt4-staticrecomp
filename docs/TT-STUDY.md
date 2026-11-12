@@ -289,3 +289,18 @@ a separate idea for both games.)
 shape as Spec II's), which `gt4saves::names::SaveNames::is_replay` already accepts with the table's prefix. After the play the
 launcher harvested the card into TT's own library: `Saves/Active/BASCUS-97502GAMEDATA` (the previous copy kept in
 `Saves/.backup`) and `Replays/BASCUS-97502RfMWiYYY`. No change was needed.
+
+## License demos: the low mul.s case [C]
+
+2026-11-11, owner's Novice licenses. License 3's demo (size 0x1F18, key 0x1846ADD0) had no CRC-confirmed chain, not even
+in a pass ten times wider (beam 20,000, saturation by step 600; 19.5 s): the rider started off the course. The demo files
+of Licenses 1, 2 and 4 (decrypted exactly) share 311 of their first 320 plaintext bytes (body size, "TT1N", 1,
+"RaceLicense", zeros), so a walk guided by those bytes reads each div.s choice off the key stream. For License 3 it stopped at
+step 2: no truncated or one-ulp-up quotient gives the body size's third byte. With mul.s allowed one ulp below the
+truncated product (the Booth array behaviour of the ps2autotests vector mul.s 1.0 * 0x3FFFFFFF = 0x3FFFFFFE, which GT4's
+487 confirmed chains never needed), one chain survives and passes the game CRC; its record block is valid (count 0, one
+Recorder ending at 0x1F18). The search now branches on that product too (prior 0.01) and requires the body's first four
+bytes to be its size; all four files decrypt in the default pass (about 0.75 s each), License 3 byte for byte as the
+guided walk. `native_tt_license_decrypt` adds three synthetic chains with one low product. A file still without a chain is
+searched once more, ten times wider, and only a chain that also meets the guard's layout rule is used; results are kept
+for the session. License 9 has no countdown on PCSX2 with the patched disc either (a rolling start).

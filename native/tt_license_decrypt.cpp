@@ -50,6 +50,9 @@ constexpr double kPlusOnePrior[2][10] = {
     {0.0, 0.0, 0.0, 0.0, 0.0, 0.03, 0.21, 0.57, 0.90, 0.99},    // quotient >= 1
 };
 
+// P(hardware mul.s = truncated product - 1 ulp). Rare: GT4's 487 confirmed chains needed none, TT's License 3 needs it.
+constexpr double kMulLowPrior = 0.01;
+
 double byte_log_prior(std::uint8_t value) noexcept {
   if (value == 0) return std::log(0.25);
   if ((value >= 0x20 && value < 0x7F) || value < 0x10 || value == 0xFF) return std::log(0.004);
@@ -205,21 +208,44 @@ SearchResult exact_decrypt(const std::uint8_t *cipher, std::size_t size, std::ui
         continue;
       }
       const std::uint8_t c = cipher[index];
-      const std::uint32_t product = mul_chop(ft_entry(c), entry.state);
       const std::uint32_t divisor = divisor_of(entry.state);
-      const std::uint32_t chop = div_chop(product, divisor);
-      const std::uint64_t dividend_bits = significand(product), divisor_bits = significand(divisor);
-      const std::uint64_t numerator = dividend_bits << (dividend_bits >= divisor_bits ? 23 : 24);
-      const std::size_t tenth = static_cast<std::size_t>(std::min<std::uint64_t>(9, (numerator % divisor_bits) * 10 / divisor_bits));
-      double plus = kPlusOnePrior[dividend_bits >= divisor_bits ? 1 : 0][tenth];
-      plus = std::min(std::max(plus, 0.004), 0.996);
-      const auto push = [&](std::uint32_t next, double probability) {
-        const std::uint8_t byte = static_cast<std::uint8_t>(cipher[index + 1] ^ keystream_byte(next));
-        candidates.push_back(Entry{entry.score + std::log(probability) + byte_log_prior(byte), next,
-                                   crc_step(entry.crc, byte), static_cast<std::int32_t>(entry_index)});
+      const std::uint32_t product = mul_chop(ft_entry(c), entry.state);
+      // mul.s: the truncated product, or rarely one ulp below it (the Booth array's dropped columns; ps2autotests
+      // mul.s 1.0 * 0x3FFFFFFF = 0x3FFFFFFE). TT's License 3 demo needs it: no chain with truncated products alone exists.
+      std::uint32_t next_states[4];
+      double next_probability[4];
+      int count = 0;
+      const auto add = [&](std::uint32_t next, double probability) {
+        for (int k = 0; k < count; ++k) {
+          if (next_states[k] == next) {
+            next_probability[k] = std::max(next_probability[k], probability);
+            return;
+          }
+        }
+        next_states[count] = next;
+        next_probability[count++] = probability;
       };
-      push(chop, 1.0 - plus);
-      if ((chop & kAbs) != 0 && (chop & kAbs) != kAbs) push(chop + 1u, plus);
+      const bool low_product = (product & kAbs) != 0 && (product & kAbs) != kAbs;
+      for (int variant = 0; variant < (low_product ? 2 : 1); ++variant) {
+        const std::uint32_t p = variant == 0 ? product : product - 1u;
+        const double variant_probability = variant == 0 ? 1.0 - kMulLowPrior : kMulLowPrior;
+        const std::uint32_t chop = div_chop(p, divisor);
+        const std::uint64_t dividend_bits = significand(p), divisor_bits = significand(divisor);
+        const std::uint64_t numerator = dividend_bits << (dividend_bits >= divisor_bits ? 23 : 24);
+        const std::size_t tenth =
+            static_cast<std::size_t>(std::min<std::uint64_t>(9, (numerator % divisor_bits) * 10 / divisor_bits));
+        double plus = kPlusOnePrior[dividend_bits >= divisor_bits ? 1 : 0][tenth];
+        plus = std::min(std::max(plus, 0.004), 0.996);
+        add(chop, variant_probability * (1.0 - plus));
+        if ((chop & kAbs) != 0 && (chop & kAbs) != kAbs) add(chop + 1u, variant_probability * plus);
+      }
+      for (int k = 0; k < count; ++k) {
+        const std::uint8_t byte = static_cast<std::uint8_t>(cipher[index + 1] ^ keystream_byte(next_states[k]));
+        // The body starts with its own size (u32, little endian): the first four bytes are known.
+        if (index + 1 < 4 && byte != static_cast<std::uint8_t>(size >> (8 * (index + 1)))) continue;
+        candidates.push_back(Entry{entry.score + std::log(next_probability[k]) + byte_log_prior(byte), next_states[k],
+                                   crc_step(entry.crc, byte), static_cast<std::int32_t>(entry_index)});
+      }
     }
     if (candidates.empty()) break;
     if (candidates.size() > limits.beam) {

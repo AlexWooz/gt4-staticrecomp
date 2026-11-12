@@ -1013,7 +1013,7 @@ elseif(GT4_TARGET STREQUAL "tt")
     # The host side of the call scripts/tt_units.py adds to TT's license cipher; a TT library built from the plain
     # units leaves it unused.
     target_sources(gt4vulkan PRIVATE tt_license_decrypt_hook.cpp)
-    target_link_libraries(gt4vulkan PRIVATE gt4_tt_license)
+    target_link_libraries(gt4vulkan PRIVATE gt4_tt_license gt4_license_guard)
 endif()
 target_include_directories(gt4vulkan PRIVATE "${PORT}")
 target_compile_definitions(gt4vulkan PRIVATE PS2_WINDOW)

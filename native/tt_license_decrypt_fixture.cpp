@@ -34,7 +34,9 @@ bool hardware_plus_one(std::uint8_t cipher, std::uint32_t state) {
 }
 
 // Encrypts like the game's save side, with the hardware choices above; returns the cipher text and the key.
-std::vector<std::uint8_t> hardware_encrypt(const std::vector<std::uint8_t> &plain, std::uint32_t &key, std::size_t &plus) {
+// `low_mul_step`: one step whose mul.s result is one ulp below the truncated product (as TT's License 3 needs).
+std::vector<std::uint8_t> hardware_encrypt(const std::vector<std::uint8_t> &plain, std::uint32_t &key, std::size_t &plus,
+                                           std::size_t low_mul_step = static_cast<std::size_t>(-1)) {
   key = (crc32(plain.data(), plain.size()) & 0xFFFFFFu) | (static_cast<std::uint32_t>(plain[0]) << 24);
   std::vector<std::uint8_t> out(plain.size());
   std::uint32_t state = initial_state(key);
@@ -43,7 +45,8 @@ std::vector<std::uint8_t> hardware_encrypt(const std::vector<std::uint8_t> &plai
     const std::uint8_t cipher = static_cast<std::uint8_t>(plain[index] ^ keystream_byte(state));
     out[index] = cipher;
     const bool up = hardware_plus_one(cipher, state);
-    const std::uint32_t chop = div_chop(mul_chop(ft_entry(cipher), state), divisor_of(state));
+    const std::uint32_t product = mul_chop(ft_entry(cipher), state) - (index == low_mul_step ? 1u : 0u);
+    const std::uint32_t chop = div_chop(product, divisor_of(state));
     const bool can = (chop & 0x7FFFFFFFu) != 0 && (chop & 0x7FFFFFFFu) != 0x7FFFFFFFu;
     if (up && can) ++plus;
     state = up && can ? chop + 1u : chop;
@@ -100,6 +103,18 @@ int main() {
     check(!exact_decrypt(cipher.data(), cipher.size(), key ^ 0x00000100u, refused).found, "wrong key refused");
     std::printf("seed %u: %zu div.s one ulp up in the hardware chain, found=%d saturation step %zu\n", seed, plus,
                 result.found ? 1 : 0, result.saturation_step);
+  }
+
+  // A chain with one low mul.s result (TT's License 3 shape): a search with truncated products alone cannot find it.
+  for (std::size_t step : {2u, 40u, 150u}) {
+    const std::vector<std::uint8_t> plain = demo_body(100 + static_cast<std::uint32_t>(step));
+    std::uint32_t key = 0;
+    std::size_t plus = 0;
+    const std::vector<std::uint8_t> cipher = hardware_encrypt(plain, key, plus, step);
+    std::vector<std::uint8_t> recovered;
+    const SearchResult result = exact_decrypt(cipher.data(), cipher.size(), key, recovered);
+    check(result.found && recovered == plain, "a chain with one low mul.s result is recovered byte for byte");
+    std::printf("low mul.s at step %zu: found=%d saturation step %zu\n", step, result.found ? 1 : 0, result.saturation_step);
   }
 
   if (g_failures) {
