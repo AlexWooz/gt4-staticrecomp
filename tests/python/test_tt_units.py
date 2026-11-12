@@ -50,7 +50,17 @@ L_004A4228:
 
 
 def pedal_edits():
-    return [edit for edit in tt_units.EDITS if edit.label != 'L_004A4228']
+    return [edit for edit in tt_units.EDITS if edit.label.startswith('L_00403')]
+
+
+def call_edits():
+    return [edit for edit in tt_units.EDITS if not edit.label]
+
+
+# The translator's line for the projection's scale call (jal 0x00321AF8 at 0x00322DCC, delay slot mov.s $f13,$f12).
+PROJECTION_LINE = ('    { c.r[31].sd[0] = static_cast<std::int32_t>(0x00322DD4u); c.f[13] = c.f[12];  if (depth < kMaxDepth) '
+                   'unit_0088(c, 203u, depth + 1u); else { c.pc = 0x00321AF8u; return; } if (c.pc != 0x00322DD4u) [[unlikely]] '
+                   'return; }\n')
 
 
 class TtUnitsTest(unittest.TestCase):
@@ -71,6 +81,20 @@ class TtUnitsTest(unittest.TestCase):
         self.assertIn('namespace gt4::tt_license { bool before_license_decrypt(ps2::Cpu &c); }', out)
         self.assertIn('L_004A4218:\n    c.pc = 1;\n', out)
 
+    def test_call_sites_get_the_host_call_after_the_delay_slot(self):
+        self.assertEqual(len(call_edits()), 6, 'four yaw candidates, the channel handler and the projection')
+        projection = [edit for edit in call_edits() if '0x00322DD4' in edit.what]
+        unit = '#include "units.hpp"\n\nnamespace gen {\nL_00322DC4:\n' + PROJECTION_LINE + '}\n'
+        out = tt_units.patch(unit, projection)
+        self.assertIn('c.f[13] = c.f[12];  ::gt4::fov_adjust::before_projection_scale_call(c); if (depth < kMaxDepth) '
+                      'unit_0088(c, 203u, depth + 1u);', out)
+        self.assertIn('namespace gt4::fov_adjust { void before_projection_scale_call(ps2::Cpu &c); }', out)
+        # The generated line must be the translator's: a changed delay slot or call target is refused.
+        with self.assertRaises(ValueError):
+            tt_units.patch(unit.replace('c.f[13] = c.f[12];', 'c.f[14] = c.f[12];'), projection)
+        with self.assertRaises(ValueError):
+            tt_units.patch(unit + PROJECTION_LINE, projection)
+
     def test_missing_or_repeated_statements_are_refused(self):
         with self.assertRaises(ValueError):
             tt_units.patch(PEDAL_UNIT.replace('c.r[17].w[0]);', 'c.r[16].w[0]);'), pedal_edits())
@@ -90,7 +114,13 @@ class TtUnitsTest(unittest.TestCase):
             (units / 'unit_0000.cpp').write_bytes(b'#include "units.hpp"\nL_00100000:\n')
             (units / 'table.cpp').write_bytes(b'// table\n')
             output = Path(temporary) / 'out'
-            self.assertEqual(tt_units.main([str(units), str(output)]), 0)
+            # Only the edits these fixtures carry (the call sites have their own test above).
+            saved = tt_units.EDITS
+            tt_units.EDITS = tuple(edit for edit in saved if edit.label)
+            try:
+                self.assertEqual(tt_units.main([str(units), str(output)]), 0)
+            finally:
+                tt_units.EDITS = saved
             self.assertEqual((output / 'table.cpp').read_bytes(), b'// table\n')
             self.assertEqual((output / 'unit_0000.cpp').read_bytes(), (units / 'unit_0000.cpp').read_bytes())
             self.assertIn('pedal_pressure', (output / 'unit_00C0.cpp').read_text(encoding='utf-8'))

@@ -402,6 +402,22 @@ inline constexpr HookAddresses kTTHooks = {
     /* frame_flare_track_count_offset */ 0x1848u,
     /* frame_flare_car_count_offset */ 0xA34u,
     /* frame_render_world */ 0u,
+    // TASK-159 / 159b / 160, mapped 2026-11-11 (scripts/tt_units.py adds the host calls; docs/TT-STUDY.md):
+    //   the chase camera spring is 0x002E7068 (the only caller of the angle difference 0x003152A0, v2.00 0x0036CC40, that
+    //   builds the 1/60 spring step); it makes four angle-difference calls and the first loads the camera's angle into f13
+    //   from 0(s0) as v2.00's yaw call does. All four get the host call, so another candidate is a relink;
+    //   the race input's channel handler 0x003FEF48 is called at 0x00403AC4 (a2 = function, a3 = value in the delay slot),
+    //   with the loop's channel ids at 0x005FB078 (s7; the same 12 ids as v2.00) and s0 already incremented (bias 1);
+    //   the race camera projection 0x00322D80 (v2.00 func_0037A170) calls its scale store at 0x00322DCC;
+    //   RAM check (headless race, R3 held): pad buffer 0x00776F00 holds the buttons at +0x1C (0xFFFB) and the right stick X
+    //   at +0x1E (0x80 at rest); the port 0 pad object 0x00598688 holds the buttons at +0x6C, then RX RY LX LY.
+    /* camera_yaw_call_return */ 0x002E7120u,
+    /* camera_pad_stick_x */ 0x00776F1Eu,
+    /* camera_analog_loop_return */ 0x00403ACCu,
+    /* camera_analog_channel_table */ 0x005FB078u,
+    /* camera_analog_slot_bias */ 1u,
+    /* fov_projection_call_return */ 0x00322DD4u,
+    /* fov_pad_buttons */ 0x005986F4u,
 };
 inline constexpr Profile kTT{Id::tt, "Tourist Trophy", 32u << 20, kTTHooks};
 

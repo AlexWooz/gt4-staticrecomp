@@ -84,8 +84,14 @@ int main() {
   check(!(h.frame_race_vtable_first <= 0x005D9E00u && 0x005D9E00u <= h.frame_race_vtable_last),
         "the other DynamicsConductor holder is outside the race range");
   check(h.frame_dynamics_clock_offset == 0x23960u && h.frame_dynamics_clock_offset < h.frame_dynamics_bytes, "race clock");
-  check(!target::available(h.camera_yaw_call_return) && !target::available(h.frame_render_world) &&
-            !target::available(h.race_display_render) && !target::available(h.fov_projection_call_return),
+  // 360-degree camera and field of view (TASK-159 / 159b / 160).
+  check(h.camera_yaw_call_return == 0x002E7120u && h.camera_pad_stick_x == 0x00776F1Eu, "camera yaw call and stick X");
+  check(h.camera_analog_loop_return == 0x00403ACCu && h.camera_analog_channel_table == 0x005FB078u &&
+            h.camera_analog_slot_bias == 1u,
+        "analog loop channel handler");
+  check(h.fov_projection_call_return == 0x00322DD4u && h.fov_pad_buttons == 0x005986F4u, "field of view");
+  check(!target::available(h.frame_render_world) && !target::available(h.race_display_render) &&
+            !target::available(h.menu_ortho_call_return),
         "unmapped hooks disabled");
 
   // The guard rule on a TT-layout body: one Recorder at body + 0x1A24 that ends at the body end.

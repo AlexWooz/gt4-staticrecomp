@@ -13,8 +13,13 @@ the few places the host must reach that no dispatch hook sees:
     replacements in the throttle case (flag 0x2, store +8) and the brake case (flag 0x4, store +10): the doubling
     `v1 << 1` becomes pedal_pressure(v1) and the divisor of the divide becomes pedal_divisor(divisor). The other two cases
     (flags 0x10 and 0x8, divisors 20 and 35) are left as v2.00 leaves them.
+  * TASK-159 / TASK-160 (native/camera_360.hpp, native/fov_adjust.hpp): host calls between a call's delay slot and the call,
+    as camera360_units.py adds them for v2.00: the four angle-difference calls of TT's chase camera spring 0x002E7068 (the
+    host acts only at the return label native/game_target.hpp names, so trying another of the four is a relink), the race
+    input's channel-handler call (0x00403AC4; a2 = function, a3 = value) and the race camera projection's scale call
+    (0x00322DCC, v2.00 func_0037A170).
 
-Each edit is found in its own labelled block exactly once, plus a declaration after `#include "units.hpp"`. It refuses a
+Each statement edit is found in its own labelled block exactly once, each call line in its unit exactly once, plus a declaration after `#include "units.hpp"`. It refuses a
 missing or repeated statement, an output folder that exists, and any result from which removing the insertions does not give
 the input back byte for byte. Every other file is copied unchanged. The generated units are game-derived: they stay under
 private/.
@@ -30,13 +35,14 @@ import sys
 from pathlib import Path
 
 INCLUDE = '#include "units.hpp"\n'
+CALL_MARK = '  if (depth < kMaxDepth)'
 
 
 @dataclasses.dataclass(frozen=True)
 class Edit:
     """One statement replaced (or one line inserted after a label) inside the block that starts at `label`."""
     what: str
-    label: str        # e.g. 'L_00403B68'
+    label: str        # e.g. 'L_00403B68'; '' for a call line found anywhere in its unit (exactly once)
     original: str     # the exact line in the block ('' for an insertion right after the label)
     replacement: str  # the new line(s)
     namespace: str
@@ -61,12 +67,34 @@ def divide(label, address, register):
                 'gt4::trigger_range', 'std::uint32_t pedal_divisor(std::uint32_t value);')
 
 
+def call_site(hook, return_label, slot, unit_call, callee):
+    """The translator's line for `jal callee` (delay slot `slot`), with the host call added after the slot, before the call."""
+    line = (f'    {{ c.r[31].sd[0] = static_cast<std::int32_t>(0x{return_label:08X}u); {slot}{CALL_MARK} {unit_call}; '
+            f'else {{ c.pc = 0x{callee:08X}u; return; }} if (c.pc != 0x{return_label:08X}u) [[unlikely]] return; }}\n')
+    namespace, _, name = hook.rpartition('::')
+    return Edit(f'{name} at return 0x{return_label:08X}', '', line,
+                line.replace(CALL_MARK, f'  ::{hook}(c); if (depth < kMaxDepth)', 1), namespace, f'void {name}(ps2::Cpu &c);')
+
+
+YAW_HOOK = 'gt4::camera360::before_chase_yaw_call'
+CHANNEL_HOOK = 'gt4::camera360::before_pad_analog_channel_call'
+PROJECTION_HOOK = 'gt4::fov_adjust::before_projection_scale_call'
+
 EDITS = (
     LICENSE,
     # Throttle (flag 0x2, store +8): sll v1,v1,1 at 0x00403B6C; div by s1 = 35 at 0x00403BA0.
     doubling('L_00403B68', 0x00403B6C), divide('L_00403B90', 0x00403BA0, 17),
     # Brake (flag 0x4, store +10): sll v1,v1,1 at 0x00403BC8; div by s6 = 65 at 0x00403BFC.
     doubling('L_00403BC0', 0x00403BC8), divide('L_00403BEC', 0x00403BFC, 22),
+    # TASK-159: the chase camera spring 0x002E7068 calls the angle difference 0x003152A0 four times (yaw candidates).
+    call_site(YAW_HOOK, 0x002E7120, 'c.f[12] = c.f[3];', 'unit_0085(c, 63u, depth + 1u)', 0x003152A0),
+    call_site(YAW_HOOK, 0x002E71B0, 'c.f[12] = ld32((c.r[17].w[0] + 1424u));', 'unit_0085(c, 63u, depth + 1u)', 0x003152A0),
+    call_site(YAW_HOOK, 0x002E7244, 'c.f[13] = ld32((c.r[16].w[0] + 12u));', 'unit_0085(c, 63u, depth + 1u)', 0x003152A0),
+    call_site(YAW_HOOK, 0x002E72A0, 'c.f[12] = ld32((c.r[17].w[0] + 1416u));', 'unit_0085(c, 63u, depth + 1u)', 0x003152A0),
+    # TASK-159b: the race input's channel handler 0x003FEF48 (jal at 0x00403AC4, delay slot a3 = value).
+    call_site(CHANNEL_HOOK, 0x00403ACC, 'c.r[7].d[0] = c.r[8].d[0] + 0ull;', 'unit_00BF(c, 366u, depth + 1u)', 0x003FEF48),
+    # TASK-160: the race camera projection's scale call (jal 0x00321AF8 at 0x00322DCC, delay slot mov.s $f13,$f12).
+    call_site(PROJECTION_HOOK, 0x00322DD4, 'c.f[13] = c.f[12];', 'unit_0088(c, 203u, depth + 1u)', 0x00321AF8),
 )
 
 
@@ -86,6 +114,11 @@ def block_span(text, label):
 
 def apply(text, edits):
     for edit in edits:
+        if not edit.label:
+            if text.count(edit.original) != 1:
+                raise ValueError(f'{edit.what}: call line found {text.count(edit.original)} times')
+            text = text.replace(edit.original, edit.replacement, 1)
+            continue
         start, end = block_span(text, edit.label)
         block = text[start:end]
         if edit.original:
@@ -104,7 +137,8 @@ def declarations(edits):
     for edit in edits:
         names.setdefault(edit.namespace, set()).add(edit.declaration)
     lines = ''.join(f'namespace {ns} {{ {" ".join(sorted(names[ns]))} }}\n' for ns in sorted(names))
-    return ('\n// Tourist Trophy host calls (native/tt_license_decrypt_hook.cpp, native/trigger_range.hpp), added by '
+    return ('\n// Tourist Trophy host calls (native/tt_license_decrypt_hook.cpp, trigger_range.hpp, camera_360.hpp, fov_adjust.hpp), '
+            'added by '
             'scripts/tt_units.py.\n' + lines)
 
 
@@ -131,10 +165,10 @@ def main(argv=None):
         raise SystemExit('output folder exists; choose a fresh one')
     by_unit = {}
     for edit in EDITS:
-        hosts = [path for path in sorted(args.units.glob('unit_*.cpp'))
-                 if f'\n{edit.label}:\n' in path.read_bytes().decode('utf-8')]
+        key = f'\n{edit.label}:\n' if edit.label else edit.original
+        hosts = [path for path in sorted(args.units.glob('unit_*.cpp')) if key in path.read_bytes().decode('utf-8')]
         if len(hosts) != 1:
-            raise SystemExit(f'{edit.what}: label {edit.label} in {len(hosts)} units, expected 1')
+            raise SystemExit(f'{edit.what}: found in {len(hosts)} units, expected 1')
         by_unit.setdefault(hosts[0].name, []).append(edit)
     args.output.mkdir(parents=True)
     receipt = {'schema_version': 2, 'edits': [edit.what for edit in EDITS], 'copied': {}, 'patched': {}}

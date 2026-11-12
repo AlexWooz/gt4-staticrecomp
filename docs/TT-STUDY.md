@@ -267,3 +267,18 @@ on the same EE cycle count; the frames of both runs match. The per-frame digest 
 first frame left out, but only in a few words that do not spread (6 at frame 2,400, 12 at 3,500, all within + 0x6B44..0x73xx
 and + 0xB08x..0xB85x; the race object's render-side words differ as expected): values written while drawing, not the
 simulation, which would diverge across the block within a few hundred frames.
+
+## 360-degree camera and field of view (TASK-159 / 159b / 160) [C]
+
+2026-11-11. `scripts/tt_units.py` adds v2.00's host calls to TT's units (11 edits in all) and `kTTHooks` names TT's sites:
+- Chase camera spring 0x002E7068: the only caller of the angle difference 0x003152A0 (v2.00 0x0036CC40) that builds the
+  1/60 spring step. It makes four angle-difference calls; the first loads the camera angle into f13 from 0(s0) as v2.00's
+  yaw call does, and is the one the host acts on (return 0x002E7120). All four carry the call, so another is a relink.
+- Right stick guard: the race input's channel handler 0x003FEF48, called at 0x00403AC4 (a2 = function, a3 = value), the
+  loop's channel ids at 0x005FB078 (byte-identical to v2.00's 12 ids), slot bias 1.
+- Field of view: the race camera projection 0x00322D80 is v2.00 func_0037A170; its scale call returns to 0x00322DD4.
+- Pad (RAM, headless race with R3 held): pad buffer 0x00776F00 (+0x1C buttons 0xFFFB, +0x1E right stick X 0x80); port 0
+  pad object 0x00598688 (+0x6C buttons, then RX RY LX LY).
+
+Owner: the camera and zoom behave as in GT4. (The camera swings with the stick's X only; a full orbit with Y looking back is
+a separate idea for both games.)
