@@ -282,3 +282,10 @@ simulation, which would diverge across the block within a few hundred frames.
 
 Owner: the camera and zoom behave as in GT4. (The camera swings with the stick's X only; a full orbit with Y looking back is
 a separate idea for both games.)
+
+## Saves and replays in the launcher [C]
+
+2026-11-11, owner's replay. TT names a replay `BASCUS-97502R` + a seven-character tag (`BASCUS-97502RfMWiYYY`, the same
+shape as Spec II's), which `gt4saves::names::SaveNames::is_replay` already accepts with the table's prefix. After the play the
+launcher harvested the card into TT's own library: `Saves/Active/BASCUS-97502GAMEDATA` (the previous copy kept in
+`Saves/.backup`) and `Replays/BASCUS-97502RfMWiYYY`. No change was needed.
