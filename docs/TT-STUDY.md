@@ -304,3 +304,17 @@ bytes to be its size; all four files decrypt in the default pass (about 0.75 s e
 guided walk. `native_tt_license_decrypt` adds three synthetic chains with one low product. A file still without a chain is
 searched once more, ten times wider, and only a chain that also meets the guard's layout rule is used; results are kept
 for the session. License 9 has no countdown on PCSX2 with the patched disc either (a rolling start).
+
+## Every license demo, offline [C]
+
+2026-11-11. `TT.VOL` begins with a decoy (GT3-style) header; its real catalogue is RoFS 3.1 at page 0x2231 (byte
+0x1118800), the same format as GT4's (page 0x2159), so `scripts/gt4_volume.py`'s parser reads it unchanged with TT's
+offsets (7,088 files, 168 directories). `replayTT/license/` holds 80 demo files: `uslt1xxxx`..`uslt4xxxx` (40, the US
+game's `license/%s` set, four license classes of ten) and `jplt…` (40, Japan). Each is a PS2ZIP file whose 16-byte header
+gives the body offset (0x40), the body size and the key, as in GT4.
+
+The four files dumped in game (Novice 1-4) are byte-identical to `uslt10001`..`uslt10004`. The exact decrypt
+(`native/tt_license_decrypt.cpp`, run offline) recovers all 40 US files in its default pass, 0.4 to 1.7 s each, and all 40
+plaintexts pass the game CRC, start with their body size and `TT1N`, and have one Recorder at 0x1A24 that ends at the body
+end. So every license's demo and setup data is decrypted exactly; whether each demo stays in sync in play is a gameplay
+question this does not answer. (The extracted files and plaintexts are game data and stay private.)
