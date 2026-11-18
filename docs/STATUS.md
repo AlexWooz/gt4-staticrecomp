@@ -1,5 +1,12 @@
 # Current Status
 
+## Tourist Trophy as a third target: contributor pull request (2026-11-18)
+
+Issue #236, branch `task/tt-target` (contributor fork): Tourist Trophy (SCUS-97502) boots, plays and runs every license test in
+its own executable (`gt4vulkan-tt.exe`) with CoreGS 2.0, MTVU and the VU1/VU0 AOT tables; hooks mapped from the v2.00 code and
+checked in guest RAM; license demos decrypted exactly (all 40 US files checked offline); a third game in the launcher. Evidence:
+`docs/TT-STUDY.md`; task entry in TASKS.md (number to be assigned). Owner review and test pending.
+
 ## 1.3.0-rc14: closing as a pre-release (2026-11-04, afternoon)
 
 On top of the slice407 test build: the full trigger range on by default with a fixed-width meter (TASK-161), the shader

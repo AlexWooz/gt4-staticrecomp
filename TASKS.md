@@ -3430,3 +3430,23 @@ compatibility pin (executable, target, disc, renderer, settings); a disposable d
 an uninterrupted run at the same guest boundary; a coordinated capture boundary (EE, VU and GS workers fenced, GPU work finished,
 in-flight card and disc I/O settled); a CoreGS 2.0 logical state independent of Vulkan handles (the external GS process separate
 or excluded); then the launcher's save and resume flow. Effort is not measured. Starts only on the owner's word after 1.3.0.
+
+### TASK-??? — Tourist Trophy (SCUS-97502) as a third target (contributor, issue #236; number to be assigned)
+
+A third game on the same engine, added the way Spec II was (decision 0072): its own translated EE library and executable
+(`GT4_TARGET=tt`, `gt4vulkan-tt.exe`, launcher `game\gt4-tt.exe`), its own hook table, and a third game in the launcher. Study
+and evidence for every address: `docs/TT-STUDY.md`.
+
+- Change: `native/game_target.hpp` `kTTHooks` (16:9 hold, race display 480p, frame skipping, license demo guard, 360-degree
+  camera with the right stick guard, FOV), the TT license demos' exact CRC-confirmed decrypt (`native/tt_license_decrypt.*`,
+  including the low mul.s case), `scripts/tt_units.py` (TT's unit edits: license decrypt call, TASK-161 pedal statements,
+  TASK-159/160 call sites), the launcher's third game (`gt4l-disc` TT identification and `CORE.TT` → ELF in Rust,
+  `docs/inputs/tt-iso.json`), and pins `docs/inputs/slice269-tt-*.json` (the slice262/slice376 derivations under TT names with
+  the reproducible slice191 port). Shared code: the guard's Manager offset per target, `native_license_guard` compiles the
+  guard itself, and a TT-only 16:9 settle rule; GT4 and Spec II behave as before.
+- Acceptance: CTest `native_tt_hooks` and `native_tt_license_decrypt` with the existing hook and guard fixtures in a TT build;
+  `tests/python/test_tt_units.py`; launcher tests with `tt_disc` (the real-disc test derives the pinned ELF); all 40 US license
+  demos decrypt exactly offline; contributor play on Windows 11 / RX 9070 XT.
+- State (2026-11-18): contributor build and play test done (all license tests completed, Arcade races, saves, replays, 30 FPS
+  mode, camera and FOV). Not played through yet: Tourist Trophy mode, challenges, time trial, photo mode. A release needs a
+  pinned TT library built on the owner's machine, like Spec II's. Number, review and in-game test: owner.
